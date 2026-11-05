@@ -123,6 +123,10 @@ class ReportPage(QWidget):
         self.reload_accounts()
         self.refresh()
 
+    def clear_book(self) -> None:
+        self.book = None
+        self.view.clear()
+
     def set_period(self, start: date, end: date) -> None:
         for edit, value in ((self.start, start), (self.end, end)):
             edit.blockSignals(True)

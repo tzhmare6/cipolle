@@ -6,14 +6,15 @@ from datetime import date
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QCoreApplication, QLocale, QSettings, Qt
+from PySide6.QtCore import QCoreApplication, QItemSelectionModel, QLocale, QPoint, QSettings, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLineEdit
+from PySide6.QtWidgets import QApplication, QDialogButtonBox, QLineEdit, QMessageBox
 
 from cipolle import reports
 from cipolle.__main__ import configure
 from cipolle.book import Book
 from cipolle.templates import KMU_CHART
+from cipolle.ui.dialogs import ImportDialog
 from cipolle.ui.main_window import MainWindow
 from cipolle.ui.models import AccountsModel, EntriesModel
 from cipolle.ui.report_page import write_pdf
@@ -34,6 +35,8 @@ def window(app, tmp_path):
     main = MainWindow()
     main.show()
     main.create_path(tmp_path / "a.cipolle", "Muster", date(2026, 1, 1), date(2026, 12, 31), KMU_CHART)
+    app.processEvents()
+    main.tabs.setCurrentWidget(main.entries_table)
     app.processEvents()
     yield main
     main.close()
@@ -250,7 +253,7 @@ def test_unknown_sum_in_shows_message(app, window):
 
 def test_deleting_used_group_shows_message(app, window):
     model = window.accounts_model
-    model.delete_row(model.row_of("group", window.book.group_by_code("10").id))
+    model.delete_rows([model.row_of("group", window.book.group_by_code("10").id)])
     assert window.book.group_by_code("10") is not None
     assert "kann nicht gelöscht" in window.statusBar().currentMessage()
 
@@ -264,7 +267,6 @@ def test_new_group_and_account_by_keyboard_only(app, window):
     type_row(app, table, ["105", "Wertschriften", "10"], Qt.Key.Key_Tab)
     group = window.book.group_by_code("105")
     assert (group.name, group.parent) == ("Wertschriften", "10")
-    assert (table.currentIndex().column()) == AccountsModel.GROUP
     table.commit_open_editor()
     table.setCurrentIndex(model.index(model.rowCount() - 1, AccountsModel.NUMBER))
     type_row(app, table, ["1060", "Depot"], Qt.Key.Key_Tab)
@@ -279,6 +281,735 @@ def test_backtab_returns_to_previous_field(app, window):
     table.setFocus()
     type_field(app, table, "x", Qt.Key.Key_Backtab)
     assert table.currentIndex().column() == EntriesModel.DOC
+
+
+@pytest.fixture
+def answer_yes(monkeypatch):
+    asked = []
+
+    def question(_parent, _title, text):
+        asked.append(text)
+        return QMessageBox.StandardButton.Yes
+
+    monkeypatch.setattr("cipolle.ui.main_window.QMessageBox.question", question)
+    return asked
+
+
+def account_row(window, number):
+    return window.accounts_model.row_of("account", window.book.account_by_number(number).id)
+
+
+def fill_entries(window, *texts):
+    model = window.entries_model
+    for row, text in enumerate(texts):
+        model.setData(model.index(row, EntriesModel.TEXT), text)
+
+
+def click_row_number(app, table, row):
+    header = table.verticalHeader()
+    QTest.mouseClick(header.viewport(), Qt.MouseButton.LeftButton, pos=QPoint(5, header.sectionViewportPosition(row) + 5))
+    app.processEvents()
+
+
+def test_both_tables_show_row_numbers(app, window):
+    fill_entries(window, "A")
+    for table in (window.entries_table, window.accounts_table):
+        window.tabs.setCurrentWidget(table)
+        app.processEvents()
+        model = table.model()
+        assert table.verticalHeader().isVisible()
+        assert model.headerData(0, Qt.Orientation.Vertical) == "1"
+        assert model.headerData(model.rowCount() - 1, Qt.Orientation.Vertical) == "*"
+
+
+def test_click_on_row_number_selects_whole_row(app, window):
+    table = window.accounts_table
+    window.tabs.setCurrentWidget(table)
+    app.processEvents()
+    click_row_number(app, table, 2)
+    assert [index.row() for index in table.selectionModel().selectedRows()] == [2]
+
+
+def test_delete_key_clears_entry_cell(app, window):
+    fill_entries(window, "A")
+    table = window.entries_table
+    model = window.entries_model
+    model.setData(model.index(0, EntriesModel.AMOUNT), "10")
+    table.setCurrentIndex(model.index(0, EntriesModel.AMOUNT))
+    table.setFocus()
+    QTest.keyClick(table, Qt.Key.Key_Delete)
+    entry = window.book.entries()[0]
+    assert entry.amount is None
+    assert entry.text == "A"
+
+
+def test_delete_key_clears_several_cells(app, window):
+    fill_entries(window, "A", "B")
+    table = window.entries_table
+    model = window.entries_model
+    table.selectionModel().select(model.index(0, EntriesModel.TEXT), QItemSelectionModel.SelectionFlag.Select)
+    table.selectionModel().select(model.index(1, EntriesModel.TEXT), QItemSelectionModel.SelectionFlag.Select)
+    QTest.keyClick(table, Qt.Key.Key_Delete)
+    assert [e.text for e in window.book.entries()] == ["", ""]
+
+
+def test_delete_key_clears_account_cells(app, window):
+    table = window.accounts_table
+    model = window.accounts_model
+    window.tabs.setCurrentWidget(table)
+    row = account_row(window, "1020")
+    model.setData(model.index(row, AccountsModel.OPENING), "100")
+    for column in (AccountsModel.NAME, AccountsModel.SUM_IN, AccountsModel.OPENING):
+        table.setCurrentIndex(model.index(row, column))
+        QTest.keyClick(table, Qt.Key.Key_Delete)
+    account = window.book.account_by_number("1020")
+    assert (account.name, account.group, account.opening) == ("", "", 0)
+
+
+def test_delete_key_keeps_required_account_fields(app, window):
+    table = window.accounts_table
+    model = window.accounts_model
+    window.tabs.setCurrentWidget(table)
+    row = account_row(window, "1020")
+    table.setCurrentIndex(model.index(row, AccountsModel.NUMBER))
+    QTest.keyClick(table, Qt.Key.Key_Delete)
+    assert window.book.account_by_number("1020") is not None
+    assert "darf nicht leer" in window.statusBar().currentMessage()
+    table.setCurrentIndex(model.index(row, AccountsModel.KLASS))
+    QTest.keyClick(table, Qt.Key.Key_Delete)
+    assert window.book.account_by_number("1020").klass == 1
+
+
+def test_delete_key_on_marked_row_deletes_entry(app, window, answer_yes):
+    fill_entries(window, "A", "B", "C")
+    table = window.entries_table
+    app.processEvents()
+    click_row_number(app, table, 1)
+    QTest.keyClick(table, Qt.Key.Key_Delete)
+    assert [e.text for e in window.book.entries()] == ["A", "C"]
+    assert answer_yes == ["Diese Buchung löschen?"]
+    assert table.currentIndex().row() == 1
+
+
+def test_declined_question_keeps_row(app, window, monkeypatch):
+    fill_entries(window, "A")
+    monkeypatch.setattr(
+        "cipolle.ui.main_window.QMessageBox.question", lambda *a: QMessageBox.StandardButton.No
+    )
+    table = window.entries_table
+    table.selectRow(0)
+    QTest.keyClick(table, Qt.Key.Key_Delete)
+    assert len(window.book.entries()) == 1
+
+
+def test_delete_key_on_marked_row_deletes_account(app, window, answer_yes):
+    table = window.accounts_table
+    window.tabs.setCurrentWidget(table)
+    app.processEvents()
+    table.selectRow(account_row(window, "1000"))
+    QTest.keyClick(table, Qt.Key.Key_Delete)
+    assert window.book.account_by_number("1000") is None
+    assert "Konto 1000 Kasse löschen?" in answer_yes
+
+
+def test_group_and_its_accounts_can_be_deleted_together(app, window, answer_yes):
+    table = window.accounts_table
+    model = window.accounts_model
+    window.tabs.setCurrentWidget(table)
+    group_row = model.row_of("group", window.book.group_by_code("130").id)
+    table.selectRow(group_row - 1)
+    table.selectionModel().select(
+        model.index(group_row, 0),
+        QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows,
+    )
+    window.delete_rows()
+    assert window.book.group_by_code("130") is None
+    assert window.book.account_by_number("1300") is None
+
+
+def test_profit_row_cannot_be_deleted(app, window, answer_yes):
+    table = window.accounts_table
+    model = window.accounts_model
+    window.tabs.setCurrentWidget(table)
+    table.selectRow(next(i for i, r in enumerate(model.rows) if r.kind == "profit"))
+    window.delete_rows()
+    assert answer_yes == []
+    assert any(r.kind == "profit" for r in model.rows)
+
+
+def test_insert_shortcut_stays_on_accounts_tab(app, window):
+    table = window.accounts_table
+    model = window.accounts_model
+    window.tabs.setCurrentWidget(table)
+    row = account_row(window, "1020")
+    table.setCurrentIndex(model.index(row, AccountsModel.NAME))
+    window.insert_row()
+    assert window.tabs.currentWidget() is table
+    assert model.row_at(row).kind == "blank"
+    assert table.currentIndex().row() == row
+    assert table.currentIndex().column() == AccountsModel.NUMBER
+    assert model.account_at(row + 1).number == "1020"
+
+
+def test_account_in_inserted_row_joins_group_at_that_place(app, window):
+    table = window.accounts_table
+    model = window.accounts_model
+    window.tabs.setCurrentWidget(table)
+    row = account_row(window, "1500")
+    table.setCurrentIndex(model.index(row, AccountsModel.NUMBER))
+    window.insert_row()
+    table.setFocus()
+    type_row(app, table, ["1505", "Neue Anlage"], Qt.Key.Key_Tab)
+    table.commit_open_editor()
+    account = window.book.account_by_number("1505")
+    assert (account.name, account.group) == ("Neue Anlage", "150")
+    assert model.account_at(row).number == "1500"
+    assert model.account_at(row + 1).number == "1505"
+
+
+def test_row_inserted_above_group_total_belongs_to_that_group(app, window):
+    model = window.accounts_model
+    row = model.row_of("group", window.book.group_by_code("100").id)
+    model.insert_before(row)
+    assert model.setData(model.index(row, AccountsModel.NUMBER), "1010")
+    assert window.book.account_by_number("1010").group == "100"
+
+
+def test_group_in_inserted_row_sums_into_surrounding_group(app, window):
+    model = window.accounts_model
+    row = model.row_of("group", window.book.group_by_code("10").id)
+    model.insert_before(row)
+    assert model.setData(model.index(row, AccountsModel.GROUP), "135")
+    assert window.book.group_by_code("135").parent == "10"
+
+
+def test_empty_inserted_row_goes_without_question(app, window, answer_yes):
+    table = window.accounts_table
+    model = window.accounts_model
+    window.tabs.setCurrentWidget(table)
+    count = model.rowCount()
+    model.insert_before(3)
+    table.selectRow(3)
+    window.delete_rows()
+    assert answer_yes == []
+    assert model.rowCount() == count
+
+
+def test_inserted_row_survives_edits_elsewhere(app, window):
+    model = window.accounts_model
+    model.insert_before(3)
+    assert model.setData(model.index(0, AccountsModel.NAME), "Handkasse")
+    assert model.row_at(3).kind == "blank"
+    blank = model.rowCount() - 1
+    assert model.setData(model.index(blank, AccountsModel.NUMBER), "1999")
+    assert model.row_at(3).kind == "blank"
+    assert model.account_at(blank).number == "1999"
+
+
+def test_changing_sum_in_moves_account_at_once(app, window):
+    table = window.accounts_table
+    model = window.accounts_model
+    window.tabs.setCurrentWidget(table)
+    table.setCurrentIndex(model.index(account_row(window, "1140"), AccountsModel.SUM_IN))
+    table.setFocus()
+    type_field(app, table, "100", Qt.Key.Key_Tab)
+    target = model.row_of("group", window.book.group_by_code("100").id)
+    assert account_row(window, "1140") == target - 1
+    assert model.index(target, AccountsModel.BALANCE).data() == "0.00"
+    assert table.currentIndex().row() == account_row(window, "1140")
+    assert table.currentIndex().column() == AccountsModel.OPENING
+    table.commit_open_editor()
+
+
+def test_changing_group_parent_moves_group_with_its_accounts(app, window):
+    table = window.accounts_table
+    model = window.accounts_model
+    window.tabs.setCurrentWidget(table)
+    row = model.row_of("group", window.book.group_by_code("130").id)
+    table.setCurrentIndex(model.index(row, AccountsModel.SUM_IN))
+    table.setFocus()
+    type_field(app, table, "14")
+    table.commit_open_editor()
+    moved = model.row_of("group", window.book.group_by_code("130").id)
+    assert moved > model.row_of("group", window.book.group_by_code("10").id)
+    assert account_row(window, "1300") == moved - 1
+
+
+def test_changing_group_code_reorders(app, window):
+    table = window.accounts_table
+    model = window.accounts_model
+    window.tabs.setCurrentWidget(table)
+    group = window.book.group_by_code("130")
+    table.setCurrentIndex(model.index(model.row_of("group", group.id), AccountsModel.GROUP))
+    table.setFocus()
+    type_field(app, table, "105")
+    table.commit_open_editor()
+    assert model.row_of("group", group.id) < model.row_of("group", window.book.group_by_code("110").id)
+
+
+def test_changing_account_number_reorders(app, window):
+    table = window.accounts_table
+    model = window.accounts_model
+    window.tabs.setCurrentWidget(table)
+    table.setCurrentIndex(model.index(account_row(window, "1530"), AccountsModel.NUMBER))
+    table.setFocus()
+    type_field(app, table, "1505")
+    table.commit_open_editor()
+    assert account_row(window, "1505") == account_row(window, "1500") + 1
+
+
+def test_new_account_in_last_row_moves_to_its_place(app, window):
+    table = window.accounts_table
+    model = window.accounts_model
+    window.tabs.setCurrentWidget(table)
+    table.setCurrentIndex(model.index(model.rowCount() - 1, AccountsModel.NUMBER))
+    table.setFocus()
+    type_row(app, table, ["1025", "Sparkonto"], Qt.Key.Key_Tab)
+    table.commit_open_editor()
+    assert account_row(window, "1025") == account_row(window, "1020") + 1
+    assert window.book.account_by_number("1025").name == "Sparkonto"
+
+
+def test_click_away_after_editing_reorders_and_keeps_new_cursor(app, window):
+    table = window.accounts_table
+    model = window.accounts_model
+    window.tabs.setCurrentWidget(table)
+    table.setCurrentIndex(model.index(account_row(window, "1140"), AccountsModel.SUM_IN))
+    table.setFocus()
+    QTest.keyClick(table, Qt.Key.Key_Return)
+    app.processEvents()
+    QApplication.focusWidget().setText("100")
+    other = model.index(account_row(window, "2000"), AccountsModel.NAME)
+    table.setCurrentIndex(other)
+    app.processEvents()
+    assert window.book.account_by_number("1140").group == "100"
+    assert account_row(window, "1140") < model.row_of("group", window.book.group_by_code("100").id)
+    assert table.currentIndex().row() == account_row(window, "2000")
+
+
+def test_tabbing_through_unchanged_field_does_not_reorder(app, window):
+    model = window.accounts_model
+    row = account_row(window, "1140")
+    assert model.setData(model.index(row, AccountsModel.SUM_IN), "114")
+    assert not model.needs_resort
+
+
+def test_name_change_does_not_reorder(app, window):
+    model = window.accounts_model
+    assert model.setData(model.index(0, AccountsModel.NAME), "Handkasse")
+    assert not model.needs_resort
+
+
+def test_inserted_row_survives_reordering(app, window):
+    table = window.accounts_table
+    model = window.accounts_model
+    window.tabs.setCurrentWidget(table)
+    model.insert_before(account_row(window, "1510"))
+    table.setCurrentIndex(model.index(account_row(window, "1140"), AccountsModel.SUM_IN))
+    table.setFocus()
+    type_field(app, table, "100")
+    table.commit_open_editor()
+    assert model.row_at(account_row(window, "1510") - 1).kind == "blank"
+
+
+def test_closing_right_after_structural_edit_is_safe(app, window):
+    path = window.book.path
+    model = window.accounts_model
+    model.setData(model.index(account_row(window, "1140"), AccountsModel.SUM_IN), "100")
+    window.close()
+    app.processEvents()
+    saved = Book.open(path, backup=False)
+    assert saved.account_by_number("1140").group == "100"
+    saved.close()
+
+
+def test_insert_on_entries_via_row_menu(app, window):
+    fill_entries(window, "A", "B")
+    table = window.entries_table
+    table.selectRow(1)
+    menu = table.row_menu()
+    assert [action.text() for action in menu.actions()] == [
+        "Zeile einfügen oben", "Zeile einfügen unten", "Zeile löschen",
+    ]
+    menu.actions()[0].trigger()
+    assert [e.text for e in window.book.entries()] == ["A", "", "B"]
+    assert table.currentIndex().row() == 1
+
+
+def test_insert_below_on_entries(app, window):
+    fill_entries(window, "A", "B")
+    table = window.entries_table
+    table.selectRow(0)
+    table.row_menu().actions()[1].trigger()
+    assert [e.text for e in window.book.entries()] == ["A", "", "B"]
+    assert table.currentIndex().row() == 1
+
+
+def test_insert_below_last_entry(app, window):
+    fill_entries(window, "A")
+    window.entries_model.setData(window.entries_model.index(0, EntriesModel.DATE), "5.5")
+    table = window.entries_table
+    table.selectRow(0)
+    window.insert_row(below=True)
+    entries = window.book.entries()
+    assert [e.text for e in entries] == ["A", ""]
+    assert entries[1].date == date(2026, 5, 5)
+    assert table.currentIndex().row() == 1
+    assert window.entries_model.rowCount() == 3
+
+
+def test_insert_below_uses_last_of_several_rows(app, window):
+    fill_entries(window, "A", "B", "C")
+    table = window.entries_table
+    flags = QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows
+    table.selectionModel().select(window.entries_model.index(0, 0), flags)
+    table.selectionModel().select(window.entries_model.index(1, 0), flags)
+    window.insert_row(below=True)
+    assert [e.text for e in window.book.entries()] == ["A", "B", "", "C"]
+
+
+def test_insert_below_account_stays_in_its_group(app, window):
+    table = window.accounts_table
+    model = window.accounts_model
+    window.tabs.setCurrentWidget(table)
+    row = account_row(window, "1000")
+    table.selectRow(row)
+    table.row_menu().actions()[1].trigger()
+    assert model.row_at(row + 1).kind == "blank"
+    assert table.currentIndex().row() == row + 1
+    assert table.currentIndex().column() == AccountsModel.NUMBER
+    assert model.setData(model.index(row + 1, AccountsModel.NUMBER), "1010")
+    assert window.book.account_by_number("1010").group == "100"
+
+
+def test_insert_below_group_total_lies_outside_that_group(app, window):
+    model = window.accounts_model
+    row = model.row_of("group", window.book.group_by_code("100").id)
+    model.insert_after(row)
+    assert model.setData(model.index(row + 1, AccountsModel.GROUP), "105")
+    assert window.book.group_by_code("105").parent == "10"
+
+
+def test_insert_above_on_empty_last_row_does_nothing(app, window):
+    table = window.entries_table
+    table.selectRow(0)
+    window.insert_row()
+    window.insert_row(below=True)
+    assert window.book.entries() == []
+
+
+def test_edit_menu_offers_both_insert_commands(app, window):
+    labels = [a.text().replace("&", "") for a in window.book_actions]
+    assert "Zeile einfügen oben" in labels
+    assert "Zeile einfügen unten" in labels
+
+
+def test_undo_menu_names_the_action(app, window):
+    assert not window.undo_action.isEnabled()
+    assert not window.redo_action.isEnabled()
+    fill_entries(window, "A")
+    assert window.undo_action.isEnabled()
+    assert window.undo_action.text() == "Rückgängig: Buchung anlegen"
+    window.undo()
+    assert window.undo_action.text() == "Rückgängig"
+    assert window.redo_action.text() == "Wiederholen: Buchung anlegen"
+    assert "Rückgängig: Buchung anlegen" in window.statusBar().currentMessage()
+
+
+def test_undo_restores_deleted_row_and_selects_it(app, window, answer_yes):
+    fill_entries(window, "A", "B", "C")
+    table = window.entries_table
+    table.selectRow(1)
+    window.delete_rows()
+    assert [e.text for e in window.book.entries()] == ["A", "C"]
+    window.undo()
+    assert [e.text for e in window.book.entries()] == ["A", "B", "C"]
+    assert window.entries_model.rowCount() == 4
+    assert table.currentIndex().row() == 1
+    window.redo()
+    assert [e.text for e in window.book.entries()] == ["A", "C"]
+
+
+def test_undo_deletes_several_rows_in_one_step(app, window, answer_yes):
+    fill_entries(window, "A", "B", "C")
+    table = window.entries_table
+    table.selectAll()
+    window.delete_rows()
+    assert window.book.entries() == []
+    window.undo()
+    assert len(window.book.entries()) == 3
+
+
+def test_clearing_cells_is_one_step(app, window):
+    fill_entries(window, "A", "B")
+    table = window.entries_table
+    model = window.entries_model
+    flag = QItemSelectionModel.SelectionFlag.Select
+    table.selectionModel().select(model.index(0, EntriesModel.TEXT), flag)
+    table.selectionModel().select(model.index(1, EntriesModel.TEXT), flag)
+    QTest.keyClick(table, Qt.Key.Key_Delete)
+    assert window.undo_action.text() == "Rückgängig: Zellen leeren"
+    window.undo()
+    assert [e.text for e in window.book.entries()] == ["A", "B"]
+
+
+def test_undo_in_chart_moves_account_back_and_selects_it(app, window):
+    table = window.accounts_table
+    model = window.accounts_model
+    window.tabs.setCurrentWidget(table)
+    original = account_row(window, "1140")
+    table.setCurrentIndex(model.index(original, AccountsModel.SUM_IN))
+    table.setFocus()
+    type_field(app, table, "100")
+    table.commit_open_editor()
+    app.processEvents()
+    assert window.book.account_by_number("1140").group == "100"
+    window.undo()
+    assert window.book.account_by_number("1140").group == "114"
+    assert account_row(window, "1140") == original
+    assert table.currentIndex().row() == original
+
+
+def test_undo_switches_to_the_table_concerned(app, window):
+    fill_entries(window, "A")
+    window.tabs.setCurrentWidget(window.accounts_table)
+    window.undo()
+    assert window.tabs.currentWidget() is window.entries_table
+
+
+def test_undo_on_report_tab_stays_and_refreshes(app, window):
+    book = window.book
+    book.add_entry(
+        date=date(2026, 1, 1), debit_id=book.account_by_number("1020").id,
+        credit_id=book.account_by_number("3000").id, amount=12345,
+    )
+    window.tabs.setCurrentWidget(window.balance_page)
+    assert "123.45" in window.balance_page.view.toPlainText()
+    window.undo()
+    assert window.tabs.currentWidget() is window.balance_page
+    assert "123.45" not in window.balance_page.view.toPlainText()
+
+
+def test_undo_commits_open_field_first(app, window):
+    fill_entries(window, "A")
+    open_editor_with(app, window, "neu")
+    window.undo()
+    assert [e.text for e in window.book.entries()] == ["A"]
+
+
+def test_undo_of_properties_updates_title(app, window):
+    window.book.set_properties("Neu AG", date(2026, 1, 1), date(2026, 12, 31))
+    window.undo()
+    assert window.windowTitle().startswith("Muster ")
+
+
+def test_tabbing_through_fields_adds_no_undo_steps(app, window):
+    fill_entries(window, "A")
+    table = window.entries_table
+    table.setCurrentIndex(window.entries_model.index(0, EntriesModel.DOC))
+    table.setFocus()
+    QTest.keyClick(table, Qt.Key.Key_Return)
+    app.processEvents()
+    press(QApplication.focusWidget(), Qt.Key.Key_Tab)
+    press(QApplication.focusWidget(), Qt.Key.Key_Tab)
+    app.processEvents()
+    table.commit_open_editor()
+    assert window.book.db.execute("SELECT count(*) FROM undo_steps").fetchone()[0] == 1
+
+
+def test_close_file_returns_to_welcome_page(app, window):
+    path = window.book.path
+    fill_entries(window, "Bleibt")
+    window.close_book()
+    assert window.book is None
+    assert window.stack.currentIndex() == 0
+    assert window.windowTitle() == "Cipolle"
+    assert window.summary.text() == ""
+    assert not any(action.isEnabled() for action in window.book_actions)
+    assert not window.undo_action.isEnabled()
+    window.open_path(path)
+    assert [e.text for e in window.book.entries()] == ["Bleibt"]
+    assert window.stack.currentIndex() == 1
+    assert all(action.isEnabled() for action in window.book_actions)
+
+
+def test_close_file_saves_open_field(app, window):
+    path = window.book.path
+    open_editor_with(app, window, "Noch offen")
+    window.close_book()
+    window.open_path(path)
+    assert [e.text for e in window.book.entries()] == ["Noch offen"]
+
+
+def test_close_file_right_after_structural_edit_is_safe(app, window):
+    model = window.accounts_model
+    model.setData(model.index(account_row(window, "1140"), AccountsModel.SUM_IN), "100")
+    window.close_book()
+    app.processEvents()
+    assert window.book is None
+
+
+def test_closing_window_after_file_close_is_safe(app, window):
+    window.close_book()
+    window.close()
+    assert window.book is None
+
+
+def test_closed_file_stays_in_recent_list(app, window):
+    path = str(window.book.path.resolve())
+    window.close_book()
+    assert window.recent_menu.actions()[0].text() == path
+
+
+def restart(app):
+    main = MainWindow()
+    main.show()
+    main.open_initial(None)
+    app.processEvents()
+    return main
+
+
+def test_quitting_with_open_file_reopens_it(app, window):
+    path = window.book.path
+    window.close()
+    main = restart(app)
+    assert main.book.path == path
+    main.close()
+
+
+def test_start_after_closing_file_shows_welcome_page(app, window):
+    window.close_book()
+    window.close()
+    main = restart(app)
+    assert main.book is None
+    assert main.stack.currentIndex() == 0
+    main.close()
+
+
+def test_opening_a_file_again_restores_reopening(app, window):
+    path = window.book.path
+    window.close_book()
+    window.open_path(path)
+    window.close()
+    main = restart(app)
+    assert main.book.path == path
+    main.close()
+
+
+def test_file_given_on_command_line_opens_after_closing(app, window):
+    path = window.book.path
+    window.close_book()
+    window.close()
+    main = MainWindow()
+    main.open_initial(str(path))
+    assert main.book.path == path
+    main.close()
+
+
+def test_chart_export_and_import_through_window(app, window, tmp_path):
+    path = tmp_path / "plan.json"
+    window.export_chart_to(path)
+    assert "exportiert" in window.statusBar().currentMessage()
+    book = window.book
+    book.delete_account(book.account_by_number("1000").id)
+    chart = window.read_chart(path)
+    window.import_chart_data(chart, replace=False)
+    assert book.account_by_number("1000").group == "100"
+    assert window.tabs.currentWidget() is window.accounts_table
+    assert window.undo_action.text() == "Rückgängig: Kontenplan importieren"
+    assert account_row(window, "1000") == 0
+    window.undo()
+    assert book.account_by_number("1000") is None
+
+
+def test_bad_chart_file_shows_warning(app, window, tmp_path, monkeypatch):
+    shown = []
+    monkeypatch.setattr("cipolle.ui.main_window.QMessageBox.warning", lambda *a: shown.append(a[2]))
+    path = tmp_path / "x.json"
+    path.write_bytes(b"\xff\xfe nichts")
+    assert window.read_chart(path) is None
+    assert window.read_chart(tmp_path / "fehlt.json") is None
+    assert len(shown) == 2
+
+
+def test_import_dialog_shows_what_changes(app, window):
+    book = window.book
+    chart = book.chart()
+    book.add_account("1999", "Eigenes", 1, "100")
+    dialog = ImportDialog(book, chart)
+    ok = dialog.buttons.button(QDialogButtonBox.StandardButton.Ok)
+    assert "Der Kontenplan entspricht bereits" in dialog.summary.text()
+    assert not ok.isEnabled()
+    dialog.replace.setChecked(True)
+    assert "Konten: 0 neu, 0 geändert, 1 entfernt" in dialog.summary.text()
+    assert ok.isEnabled()
+
+
+def test_import_dialog_warns_about_used_accounts_and_openings(app, window):
+    book = window.book
+    chart = book.chart()
+    used = book.add_account("1999", "Benutzt", 1, "100")
+    book.add_entry(date=date(2026, 1, 1), debit_id=used, amount=1)
+    book.add_account("1998", "Saldo", 1, "100", opening=500)
+    dialog = ImportDialog(book, chart)
+    dialog.replace.setChecked(True)
+    assert "Bleiben, weil sie Buchungen haben: 1999" in dialog.summary.text()
+    assert "Eröffnungssaldo geht verloren: 1998" in dialog.summary.text()
+
+
+def test_tab_order_and_start_tab(app, window):
+    labels = [window.tabs.tabText(i) for i in range(window.tabs.count())]
+    assert labels[:3] == ["Konten", "Buchungen", "Kontoauszug"]
+
+
+def test_opening_a_file_focuses_the_chart(app, window):
+    window.open_path(window.book.path)
+    app.processEvents()
+    table = window.accounts_table
+    assert window.tabs.currentWidget() is table
+    assert QApplication.focusWidget() is table
+    assert table.currentIndex().row() == 0
+    assert table.currentIndex().column() == AccountsModel.NUMBER
+
+
+def test_switching_to_entries_lands_in_new_row(app, window):
+    fill_entries(window, "A")
+    window.tabs.setCurrentWidget(window.accounts_table)
+    app.processEvents()
+    window.tabs.setCurrentWidget(window.entries_table)
+    app.processEvents()
+    table = window.entries_table
+    assert QApplication.focusWidget() is table
+    assert table.currentIndex().row() == 1
+    assert table.currentIndex().column() == EntriesModel.DATE
+
+
+def test_switching_to_report_tab_is_safe(app, window):
+    window.tabs.setCurrentWidget(window.balance_page)
+    app.processEvents()
+    assert window.tabs.currentWidget() is window.balance_page
+
+
+def test_tab_shortcuts_follow_tab_order(app, window):
+    view = next(a for a in window.menuBar().actions() if "Ansicht" in a.text()).menu()
+    assert [(a.text(), a.shortcut().toString()) for a in view.actions()[:2]] == [
+        ("Konten", "Ctrl+1"), ("Buchungen", "Ctrl+2"),
+    ]
+    view.actions()[0].trigger()
+    assert window.tabs.currentWidget() is window.accounts_table
+
+
+def test_row_menu_names_several_rows(app, window):
+    fill_entries(window, "A", "B")
+    table = window.entries_table
+    table.selectAll()
+    assert table.row_menu().actions()[2].text() == "2 Zeilen löschen"
+
+
+def test_row_menu_is_disabled_on_the_empty_last_row(app, window):
+    table = window.entries_table
+    table.selectRow(0)
+    assert not any(action.isEnabled() for action in table.row_menu().actions())
 
 
 def test_keyboard_entry_in_sum_in_column(app, window):
@@ -304,7 +1035,7 @@ def test_deleting_used_account_shows_message(app, window):
     book.add_entry(date=date(2026, 1, 1), debit_id=book.account_by_number("1020").id, amount=1)
     model = window.accounts_model
     row = model.row_of("account", book.account_by_number("1020").id)
-    model.delete_row(row)
+    model.delete_rows([row])
     assert book.account_by_number("1020") is not None
     assert "kann nicht gelöscht" in window.statusBar().currentMessage()
 

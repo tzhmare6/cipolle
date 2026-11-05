@@ -7,8 +7,10 @@ referenziert, deshalb lassen sich Kontonummern nachträglich ändern.
 from __future__ import annotations
 
 import calendar
+import functools
 import shutil
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
@@ -17,8 +19,26 @@ from .parsing import format_amount, format_date, natural_key
 from .templates import ASSET, EXPENSE, KLASS_NAMES, LIABILITY, REVENUE, Chart
 
 APPLICATION_ID = 0x43495030  # "CIP0"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+MAX_UNDO_STEPS = 500
+UNDO_TABLES = ("meta", "groups", "accounts", "entries")
 FILE_SUFFIX = ".cipolle"
+
+UNDO_SCHEMA = """
+CREATE TABLE undo_steps (
+    id INTEGER PRIMARY KEY,
+    label TEXT NOT NULL,
+    undone INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE undo_log (
+    id INTEGER PRIMARY KEY,
+    step_id INTEGER NOT NULL REFERENCES undo_steps(id),
+    tbl TEXT NOT NULL,
+    pk TEXT NOT NULL,
+    sql TEXT NOT NULL
+);
+CREATE INDEX undo_log_step ON undo_log(step_id);
+"""
 
 SCHEMA = """
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -47,7 +67,7 @@ CREATE TABLE entries (
     amount INTEGER
 );
 CREATE INDEX entries_position ON entries(position);
-"""
+""" + UNDO_SCHEMA
 
 
 MIGRATE_V1 = """
@@ -63,6 +83,20 @@ ALTER TABLE accounts ADD COLUMN group_id INTEGER REFERENCES groups(id);
 
 class BookError(Exception):
     """Fehler, der dem Benutzer direkt angezeigt werden kann."""
+
+
+def undoable(label: str):
+    """Macht aus einer Änderungsfunktion einen Schritt für «Rückgängig»."""
+
+    def decorate(method):
+        @functools.wraps(method)
+        def wrapper(self, *args, **kwargs):
+            with self.step(label):
+                return method(self, *args, **kwargs)
+
+        return wrapper
+
+    return decorate
 
 
 @dataclass(frozen=True)
@@ -114,6 +148,15 @@ class ChartRow:
 
 
 @dataclass(frozen=True)
+class HistoryResult:
+    """Was «Rückgängig» oder «Wiederholen» zuletzt berührt hat."""
+
+    label: str
+    table: str
+    row_id: int | None  # fehlt, wenn die Zeile nicht mehr existiert
+
+
+@dataclass(frozen=True)
 class Entry:
     id: int
     position: int
@@ -131,6 +174,8 @@ class Book:
         self.db = connection
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys = ON")
+        self._step_id: int | None = None
+        self.db.create_function("cipolle_undo_step", 0, lambda: self._step_id)
 
     # -- Datei ---------------------------------------------------------
 
@@ -156,6 +201,7 @@ class Book:
             book.db.executescript(SCHEMA)
             book.set_properties(company, start, end)
             book._apply_chart(chart or Chart())
+        book._install_undo_triggers()
         return book
 
     def _apply_chart(self, chart: Chart) -> None:
@@ -196,8 +242,11 @@ class Book:
         if backup:
             shutil.copy2(path, path.with_name(path.name + ".bak"))
         book = cls(path, connection)
-        if version < SCHEMA_VERSION:
+        if version < 2:
             book._migrate_from_v1()
+        if version < 3:
+            book.db.executescript(UNDO_SCHEMA + f"PRAGMA user_version = {SCHEMA_VERSION};")
+        book._install_undo_triggers()
         return book
 
     def _migrate_from_v1(self) -> None:
@@ -221,10 +270,132 @@ class Book:
                         (str(cursor.lastrowid),),
                     )
             self.db.execute("ALTER TABLE accounts DROP COLUMN grp")
-            self.db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            self.db.execute("PRAGMA user_version = 2")
 
     def close(self) -> None:
         self.db.close()
+
+    # -- Rückgängig ----------------------------------------------------
+
+    def _install_undo_triggers(self) -> None:
+        """Erzeugt die Trigger, die zu jeder Änderung den Umkehrbefehl schreiben.
+
+        TEMP-Trigger leben nur in dieser Verbindung. Sie passen deshalb immer
+        zum aktuellen Schema, und fremde Werkzeuge schreiben nicht ins Log.
+        """
+        for table in UNDO_TABLES:
+            info = self.db.execute(f"PRAGMA table_info({table})").fetchall()
+            columns = [f'"{row["name"]}"' for row in info]
+            pk = next(f'"{row["name"]}"' for row in info if row["pk"])
+
+            assignments = " || ',' || ".join(f"'{c}=' || quote(old.{c})" for c in columns)
+            originals = " || ',' || ".join(f"quote(old.{c})" for c in columns)
+            changed = " OR ".join(f"old.{c} IS NOT new.{c}" for c in columns)
+            recording = "cipolle_undo_step() IS NOT NULL"
+            log = f"INSERT INTO undo_log (step_id, tbl, pk, sql) VALUES (cipolle_undo_step(), '{table}'"
+            self.db.executescript(
+                f"""
+                CREATE TEMP TRIGGER undo_{table}_insert AFTER INSERT ON main.{table}
+                WHEN {recording} BEGIN
+                    {log}, new.{pk}, 'DELETE FROM {table} WHERE {pk}=' || quote(new.{pk}));
+                END;
+                CREATE TEMP TRIGGER undo_{table}_update AFTER UPDATE ON main.{table}
+                WHEN {recording} AND ({changed}) BEGIN
+                    {log}, old.{pk}, 'UPDATE {table} SET ' || {assignments}
+                        || ' WHERE {pk}=' || quote(old.{pk}));
+                END;
+                CREATE TEMP TRIGGER undo_{table}_delete AFTER DELETE ON main.{table}
+                WHEN {recording} BEGIN
+                    {log}, old.{pk}, 'INSERT INTO {table} ({", ".join(columns)}) VALUES ('
+                        || {originals} || ')');
+                END;
+                """
+            )
+
+    @contextmanager
+    def step(self, label: str):
+        """Fasst alle Änderungen im Block zu einem Rückgängig-Schritt zusammen."""
+        if self._step_id is not None:
+            yield
+            return
+        with self.db:
+            self._step_id = self.db.execute(
+                "INSERT INTO undo_steps (label) VALUES (?)", (label,)
+            ).lastrowid
+        try:
+            yield
+        finally:
+            step_id, self._step_id = self._step_id, None
+            self._finish_step(step_id)
+
+    def _finish_step(self, step_id: int) -> None:
+        with self.db:
+            logged = self.db.execute("SELECT 1 FROM undo_log WHERE step_id = ? LIMIT 1", (step_id,)).fetchone()
+            if not logged:
+                self.db.execute("DELETE FROM undo_steps WHERE id = ?", (step_id,))
+                return
+            # Eine neue Änderung beendet die Möglichkeit, Zurückgenommenes zu wiederholen.
+            self.db.execute(
+                "DELETE FROM undo_log WHERE step_id IN (SELECT id FROM undo_steps WHERE undone = 1)"
+            )
+            self.db.execute("DELETE FROM undo_steps WHERE undone = 1")
+            oldest = "SELECT id FROM undo_steps ORDER BY id DESC LIMIT -1 OFFSET ?"
+            self.db.execute(f"DELETE FROM undo_log WHERE step_id IN ({oldest})", (MAX_UNDO_STEPS,))
+            self.db.execute(f"DELETE FROM undo_steps WHERE id IN ({oldest})", (MAX_UNDO_STEPS,))
+
+    def _next_undo(self) -> sqlite3.Row | None:
+        return self.db.execute(
+            "SELECT id, label FROM undo_steps WHERE undone = 0 ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+
+    def _next_redo(self) -> sqlite3.Row | None:
+        return self.db.execute(
+            "SELECT id, label FROM undo_steps WHERE undone = 1 ORDER BY id LIMIT 1"
+        ).fetchone()
+
+    @property
+    def undo_label(self) -> str | None:
+        row = self._next_undo()
+        return row["label"] if row else None
+
+    @property
+    def redo_label(self) -> str | None:
+        row = self._next_redo()
+        return row["label"] if row else None
+
+    def undo(self) -> HistoryResult | None:
+        row = self._next_undo()
+        return self._replay(row, 1) if row else None
+
+    def redo(self) -> HistoryResult | None:
+        row = self._next_redo()
+        return self._replay(row, 0) if row else None
+
+    def _replay(self, step: sqlite3.Row, undone: int) -> HistoryResult:
+        """Führt die Umkehrbefehle rückwärts aus. Die Trigger schreiben dabei die Gegenrichtung."""
+        rows = self.db.execute(
+            "SELECT tbl, pk, sql FROM undo_log WHERE step_id = ? ORDER BY id DESC", (step["id"],)
+        ).fetchall()
+        self._step_id = step["id"]
+        try:
+            with self.db:
+                self.db.execute("DELETE FROM undo_log WHERE step_id = ?", (step["id"],))
+                for row in rows:
+                    self.db.execute(row["sql"])
+                self.db.execute("UPDATE undo_steps SET undone = ? WHERE id = ?", (undone, step["id"]))
+        finally:
+            self._step_id = None
+        for row in rows:
+            if row["tbl"] != "meta":
+                found = self.db.execute(f"SELECT id FROM {row['tbl']} WHERE id = ?", (row["pk"],)).fetchone()
+                if found:
+                    return HistoryResult(step["label"], row["tbl"], found["id"])
+        return HistoryResult(step["label"], rows[0]["tbl"], None)
+
+    def clear_undo(self) -> None:
+        with self.db:
+            self.db.execute("DELETE FROM undo_log")
+            self.db.execute("DELETE FROM undo_steps")
 
     # -- Eigenschaften -------------------------------------------------
 
@@ -243,6 +414,7 @@ class Book:
     def end(self) -> date:
         return date.fromisoformat(self._meta("end"))
 
+    @undoable("Eigenschaften ändern")
     def set_properties(self, company: str, start: date, end: date) -> None:
         if end < start:
             raise BookError("Das Geschäftsjahr endet vor seinem Beginn.")
@@ -292,6 +464,7 @@ class Book:
             raise BookError(f"Gruppe «{words[0]}» nicht gefunden.")
         return group.id
 
+    @undoable("Gruppe anlegen")
     def add_group(self, code: str, name: str = "", parent: str = "") -> int:
         code = code.strip()
         self._check_group_code(code)
@@ -304,6 +477,7 @@ class Book:
             )
         return cursor.lastrowid
 
+    @undoable("Gruppe ändern")
     def update_group(self, group_id: int, **fields) -> None:
         current = self.group(group_id)
         code = fields.get("code", current.code).strip()
@@ -333,6 +507,7 @@ class Book:
         if " " in code:
             raise BookError("Der Gruppencode darf keine Leerzeichen enthalten.")
 
+    @undoable("Gruppe löschen")
     def delete_group(self, group_id: int) -> None:
         used = self.db.execute(
             "SELECT 1 FROM accounts WHERE group_id = ? "
@@ -351,6 +526,7 @@ class Book:
         row = self.db.execute("SELECT value FROM meta WHERE key = 'profit_group'").fetchone()
         return self.group(int(row[0])).code if row else ""
 
+    @undoable("Gruppe für Jahreserfolg ändern")
     def set_profit_group(self, code: str) -> None:
         group_id = self._group_id(code)
         with self.db:
@@ -462,6 +638,7 @@ class Book:
             raise BookError(f"«{needle}» ist nicht eindeutig ({len(candidates)} Konten).")
         raise BookError(f"Konto «{needle}» nicht gefunden.")
 
+    @undoable("Konto anlegen")
     def add_account(self, number: str, name: str, klass: int, group: str = "", opening: int = 0) -> int:
         number = number.strip()
         self._check_account(number, klass, opening)
@@ -474,6 +651,7 @@ class Book:
             )
         return cursor.lastrowid
 
+    @undoable("Konto ändern")
     def update_account(self, account_id: int, **fields) -> None:
         current = self.account(account_id)
         number = fields.get("number", current.number).strip()
@@ -511,6 +689,7 @@ class Book:
         ).fetchone()
         return row is not None
 
+    @undoable("Konto löschen")
     def delete_account(self, account_id: int) -> None:
         if self.account_is_used(account_id):
             raise BookError("Das Konto wird in Buchungen verwendet und kann nicht gelöscht werden.")
@@ -536,6 +715,7 @@ class Book:
         rows = self.db.execute("SELECT * FROM entries ORDER BY position, id").fetchall()
         return [self._entry(row) for row in rows]
 
+    @undoable("Buchung anlegen")
     def add_entry(
         self,
         date: date | None = None,
@@ -564,6 +744,7 @@ class Book:
             )
         return cursor.lastrowid
 
+    @undoable("Buchung ändern")
     def update_entry(self, entry_id: int, **fields) -> None:
         allowed = {"date", "doc", "text", "debit_id", "credit_id", "amount"}
         if not fields or not set(fields) <= allowed:
@@ -577,10 +758,12 @@ class Book:
                 (*fields.values(), entry_id),
             )
 
+    @undoable("Buchungen löschen")
     def delete_entries(self, entry_ids: list[int]) -> None:
         with self.db:
             self.db.executemany("DELETE FROM entries WHERE id = ?", [(i,) for i in entry_ids])
 
+    @undoable("Buchungen sortieren")
     def sort_entries_by_date(self) -> None:
         """Sortiert stabil nach Datum, Zeilen ohne Datum bleiben am Schluss."""
         entries = sorted(self.entries(), key=lambda e: (e.date is None, e.date or date.max))
@@ -743,6 +926,11 @@ def carry_over(source: Book, target: Book, equity_number: str) -> None:
     """
     if source.end >= target.start:
         raise BookError("Das Vorjahr muss vor dem Beginn dieses Geschäftsjahrs enden.")
+    with target.step("Eröffnung aus Vorjahr aktualisieren"):
+        _carry_over(source, target, equity_number)
+
+
+def _carry_over(source: Book, target: Book, equity_number: str) -> None:
     equity = source.account_by_number(equity_number)
     if equity is None or equity.klass != LIABILITY:
         raise BookError("Für den Jahreserfolg wird ein Passivkonto benötigt.")
@@ -771,4 +959,5 @@ def create_next_year(source: Book, path: str | Path, equity_number: str) -> Book
     start, end = next_period(source.start, source.end)
     target = Book.create(path, source.company, start, end, source.chart())
     carry_over(source, target, equity_number)
+    target.clear_undo()
     return target

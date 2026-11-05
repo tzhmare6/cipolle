@@ -120,6 +120,20 @@ def test_without_profit_group_profit_stands_before_total(book, ids):
     assert report.rows[-1].cells[1] == "Total Passiven"
 
 
+def test_root_groups_without_total_in_name_give_one_total(book, ids):
+    setup_year(book, ids)
+    book.update_group(book.group_by_code("1").id, name="Aktiven")
+    book.update_group(book.group_by_code("2").id, name="Passiven")
+    book.set_profit_group("")
+    report = reports.balance_sheet(book)
+    labels = [row.cells[1] for row in report.rows]
+    assert labels.count("Total Aktiven") == 1
+    assert labels.count("Total Passiven") == 1
+    assert labels.count("Aktiven") == 1
+    assert find(report, "Total Passiven").cells[2] == find(report, "Total Aktiven").cells[2] == 130000
+    assert labels.index("Gewinn laufendes Jahr") < labels.index("Total Passiven")
+
+
 def test_ungrouped_account_still_counts(book, ids):
     setup_year(book, ids)
     book.update_account(ids["1020"], group="")

@@ -24,15 +24,19 @@ python3 -m venv .venv
 .venv/bin/cipolle
 ```
 
-Mit einem Dateinamen als Argument öffnet Cipolle direkt diese Datei. Sonst
-öffnet es die zuletzt verwendete.
+Mit einem Dateinamen als Argument öffnet Cipolle direkt diese Datei. Sonst öffnet
+es die zuletzt verwendete, ausser sie wurde vor dem Beenden mit *Datei > Schliessen*
+geschlossen. Dann beginnt es auf der Startseite. Nach dem Öffnen steht der Cursor
+im Kontenplan.
 
 ## Bedienung
 
 **Datei:** Pro Geschäftsjahr gibt es eine Datei mit der Endung `.cipolle`. Jede
 Eingabe wird sofort gespeichert, es gibt keinen Speichern-Befehl. Beim Öffnen
 legt Cipolle eine Kopie der Datei als `.cipolle.bak` an und überschreibt dabei
-die vorherige Kopie. Eine echte Datensicherung ersetzt das nicht.
+die vorherige Kopie. Eine echte Datensicherung ersetzt das nicht. Dateien älterer
+Cipolle-Versionen werden beim Öffnen automatisch umgestellt und lassen sich danach
+mit diesen älteren Versionen nicht mehr öffnen.
 
 **Erster Start:** Unter *Datei > Neu* den Namen und das Geschäftsjahr angeben und
 den KMU-Kontenplan oder einen leeren Kontenplan wählen. Im Reiter *Konten*
@@ -44,17 +48,43 @@ zeigt das Total und summiert über ihr eigenes *Summe in* in die nächsthöhere
 Gruppe, zum Beispiel 1020 Bank → 100 Flüssige Mittel → 10 Umlaufvermögen → 1 Total
 Aktiven. Die Reihenfolge ergibt sich automatisch aus Nummern und Codes.
 
-In der leeren Zeile am Ende legt ein Eintrag in der Spalte *Konto* ein Konto an
-und ein Eintrag in *Gruppe* eine Gruppe. Ein neues Konto übernimmt Klasse und
-Gruppe als Vorschlag. Neue Zeilen rücken erst beim nächsten Öffnen des Reiters an
-ihren Platz. Konten mit Buchungen und Gruppen, in die noch etwas summiert, lassen
-sich nicht löschen.
+In einer leeren Zeile legt ein Eintrag in der Spalte *Konto* ein Konto an und ein
+Eintrag in *Gruppe* eine Gruppe. In einer eingefügten Zeile gehört der neue Eintrag
+zur Gruppe an dieser Stelle, in der Zeile `*` am Ende schlägt Cipolle die Gruppe des
+vorangehenden Kontos vor. Ändert sich eine Kontonummer, ein Gruppencode oder *Summe
+in*, rückt die Zeile sofort an ihren Platz und der Cursor wandert mit. Leere
+eingefügte Zeilen verschwinden beim Wechsel des Reiters. Konten mit Buchungen und
+Gruppen, in die noch etwas summiert, lassen sich nicht löschen.
 
 Bilanz und Erfolgsrechnung zeigen die Gruppen eingerückt mit Zwischentotalen. Die
 Zeile für den Jahreserfolg steht in der Gruppe, die unter *Datei > Eigenschaften*
-gewählt ist (im KMU-Kontenplan 28 Eigenkapital). Enthält eine Gruppe Aktiv- und
-Passivkonten, erscheint eine Warnung. Dateien aus der ersten Cipolle-Version werden
-beim Öffnen umgestellt, die Gruppen heissen dann G1, G2 usw.
+gewählt ist (im KMU-Kontenplan 28 Eigenkapital). Ohne gewählte Gruppe steht sie
+direkt vor *Total Passiven*. Enthält eine Gruppe Aktiv- und Passivkonten, erscheint
+eine Warnung. Bei Dateien aus der ersten Cipolle-Version heissen die Gruppen nach der
+Umstellung G1, G2 usw.
+
+**Kontenplan exportieren und importieren:** *Datei > Kontenplan exportieren*
+speichert Gruppen und Konten als JSON-Datei, ohne Eröffnungssaldi und Buchungen.
+*Datei > Kontenplan importieren* prüft die Datei zuerst vollständig und zeigt, was
+sich ändert. *Zusammenführen* ergänzt und aktualisiert, ohne etwas zu entfernen.
+*Ersetzen* entfernt zusätzlich alles, was nicht in der Datei steht. Konten mit
+Buchungen und ihre Gruppen bleiben dabei immer erhalten.
+
+```json
+{
+  "format": "cipolle-kontenplan",
+  "version": 1,
+  "jahreserfolg_in": "28",
+  "gruppen": [
+    { "code": "100", "name": "Flüssige Mittel", "summe_in": "10" }
+  ],
+  "konten": [
+    { "nummer": "1020", "name": "Bank", "klasse": "Aktiven", "summe_in": "100" }
+  ]
+}
+```
+
+Die Klasse ist `Aktiven`, `Passiven`, `Aufwand` oder `Ertrag`.
 
 **Buchungen:** In der Zeile mit dem `*` erfassen, Enter oder Tab springt ins
 nächste Feld.
@@ -68,6 +98,21 @@ nächste Feld.
 Eine neue Zeile übernimmt das Datum der vorherigen. Fehlerhafte Zeilen werden
 rot, der Grund steht im Tooltip. Sie zählen nicht in den Auswertungen. Das
 steht dann auch auf jedem Bericht.
+
+**Zeilen und Zellen:** Beide Tabellen haben Zeilennummern. Ein Klick auf die Nummer
+markiert die ganze Zeile, mit gedrückter Maustaste, Shift oder Ctrl auch mehrere.
+Die Taste Entf löscht markierte Zeilen nach einer Rückfrage. Ist keine ganze Zeile
+markiert, leert sie die markierten Zellen. Pflichtfelder wie die Kontonummer bleiben
+dabei erhalten. Ein Rechtsklick auf Zeilennummer oder Zelle öffnet das Menü mit
+*Zeile einfügen oben*, *Zeile einfügen unten* und *Zeile löschen*.
+
+**Rückgängig:** Ctrl+Z nimmt die letzte Aktion zurück, Ctrl+Y wiederholt sie. Das
+Menü *Bearbeiten* nennt die Aktion, und die Tabelle springt zur betroffenen Zeile.
+Eine Aktion mit mehreren Zeilen ist ein einziger Schritt. Der Verlauf liegt in der
+Datei, übersteht das Schliessen und umfasst die letzten 500 Schritte. Während man
+in einem Feld tippt, wirkt Ctrl+Z nur auf dieses Feld. *Neues Jahr erstellen* und
+eingefügte leere Zeilen im Kontenplan lassen sich nicht zurücknehmen. Änderungen mit
+anderen Werkzeugen landen nicht im Verlauf.
 
 **Sammelbuchungen:** Mehrere aufeinanderfolgende Zeilen mit nur Soll oder nur
 Haben erfassen. Ihre Summen müssen sich ausgleichen, sonst wird die letzte Zeile
@@ -85,13 +130,18 @@ noch geändert, holt *Datei > Eröffnung aus Vorjahr aktualisieren* die Saldi ne
 | Tastenkürzel | Funktion |
 | --- | --- |
 | Ctrl+1 bis Ctrl+6 | Reiter wechseln |
-| Ctrl+I | Zeile vor der aktuellen einfügen |
-| Ctrl+Entf | Zeile löschen |
+| Ctrl+W | Datei schliessen |
+| Ctrl+Z | Rückgängig |
+| Ctrl+Y oder Ctrl+Shift+Z | Wiederholen |
+| Ctrl+I | Zeile oben einfügen |
+| Ctrl+Shift+I | Zeile unten einfügen |
+| Entf | Zellen leeren oder markierte Zeilen löschen |
+| Ctrl+Entf | Aktuelle oder markierte Zeilen löschen |
 
 ## Nicht enthalten
 
 MWST, Fremdwährungen, Bankimport, Rechnungen, Kostenstellen, Budget, Vorjahresvergleich,
-Rückgängig, Suche und der Import von Banana-Dateien.
+Suche und der Import von Banana-Dateien.
 
 ## Entwicklung
 
@@ -103,7 +153,12 @@ Rückgängig, Suche und der Import von Banana-Dateien.
 .venv/bin/python -m pytest
 ```
 
-Die Fachlogik liegt ohne Qt-Abhängigkeit in `cipolle/book.py` und
-`cipolle/reports.py`, die Oberfläche in `cipolle/ui/`. Beträge sind überall ganze
-Rappen. Die `.cipolle`-Datei ist eine normale SQLite-Datenbank und lässt sich
-auch mit anderen Werkzeugen lesen.
+Die Fachlogik liegt ohne Qt-Abhängigkeit in `cipolle/book.py`, `cipolle/reports.py`
+und `cipolle/chart_io.py`, die Oberfläche in `cipolle/ui/`. Beträge sind überall ganze
+Rappen. Die `.cipolle`-Datei ist eine normale SQLite-Datenbank und lässt sich auch mit
+anderen Werkzeugen lesen.
+
+Für Rückgängig schreiben TEMP-Trigger zu jeder Änderung den Umkehrbefehl in die
+Tabellen `undo_steps` und `undo_log`. Sie werden bei jedem Öffnen neu erzeugt und
+passen so immer zum Schema. Änderungsfunktionen in `Book` tragen den Dekorator
+`@undoable`, mehrteilige Aktionen laufen in `with book.step(...)`.

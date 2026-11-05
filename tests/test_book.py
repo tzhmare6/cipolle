@@ -391,5 +391,236 @@ def test_old_file_is_migrated_and_backed_up(tmp_path):
     assert len(again.groups()) == 2
     again.close()
     backup = sqlite3.connect(path.with_name("alt.cipolle.bak"))
-    assert backup.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert backup.execute("PRAGMA user_version").fetchone()[0] == 3
     backup.close()
+
+
+def snapshot(book):
+    return (book.accounts(), book.groups(), book.entries(), book.company, book.start, book.end, book.profit_group)
+
+
+def test_undo_and_redo_of_new_entry(book, ids):
+    post(book, ids, "1020", "3000", 100)
+    assert book.undo_label == "Buchung anlegen"
+    result = book.undo()
+    assert book.entries() == []
+    assert result.label == "Buchung anlegen"
+    assert result.row_id is None
+    assert book.undo_label is None
+    assert book.redo_label == "Buchung anlegen"
+    result = book.redo()
+    assert book.entries()[0].amount == 100
+    assert result.table == "entries"
+    assert book.redo_label is None
+
+
+def test_undo_restores_deleted_entry_exactly(book, ids):
+    entry_id = post(book, ids, "1020", "3000", 123450, text="O'Brien; «Test»")
+    before = book.entries()
+    book.delete_entries([entry_id])
+    book.undo()
+    assert book.entries() == before
+
+
+def test_undo_restores_null_values(book):
+    entry_id = book.add_entry(text="ohne Datum")
+    book.update_entry(entry_id, date=date(2026, 1, 1), amount=5)
+    book.undo()
+    entry = book.entries()[0]
+    assert (entry.date, entry.amount) == (None, None)
+
+
+def test_undo_steps_go_back_in_order(book, ids):
+    entry_id = post(book, ids, "1020", "3000", 100)
+    book.update_entry(entry_id, amount=200)
+    book.update_entry(entry_id, amount=300)
+    book.undo()
+    assert book.entries()[0].amount == 200
+    book.undo()
+    assert book.entries()[0].amount == 100
+    book.redo()
+    book.redo()
+    assert book.entries()[0].amount == 300
+
+
+def test_new_change_discards_redo(book, ids):
+    entry_id = post(book, ids, "1020", "3000", 100)
+    book.update_entry(entry_id, amount=200)
+    book.undo()
+    book.update_entry(entry_id, text="neu")
+    assert book.redo_label is None
+    book.undo()
+    assert book.entries()[0].amount == 100
+
+
+def test_unchanged_value_creates_no_step(book, ids):
+    entry_id = post(book, ids, "1020", "3000", 100)
+    book.update_entry(entry_id, amount=200)
+    book.undo()
+    book.update_entry(entry_id, amount=100)
+    assert book.redo_label == "Buchung ändern"
+    assert book.undo_label == "Buchung anlegen"
+
+
+def test_failed_change_keeps_history(book, ids):
+    entry_id = post(book, ids, "1020", "3000", 100)
+    book.update_entry(entry_id, amount=200)
+    book.undo()
+    with pytest.raises(BookError):
+        book.update_account(ids["1000"], number="1020")
+    assert book.redo_label == "Buchung ändern"
+
+
+def test_step_groups_several_changes(book, ids):
+    with book.step("Sammlung"):
+        post(book, ids, "1020", "3000", 1)
+        post(book, ids, "1020", "3000", 2)
+    assert book.undo_label == "Sammlung"
+    book.undo()
+    assert book.entries() == []
+    book.redo()
+    assert [e.amount for e in book.entries()] == [1, 2]
+
+
+def test_undo_of_inserted_row_restores_positions(book, ids):
+    post(book, ids, "1020", "3000", 1)
+    second = post(book, ids, "1020", "3000", 2)
+    before = book.entries()
+    book.add_entry(before_position=book.entries()[1].position)
+    book.undo()
+    assert book.entries() == before
+    assert before[1].id == second
+
+
+def test_undo_of_sort(book, ids):
+    post(book, ids, "1020", "3000", 1, date(2026, 5, 1))
+    post(book, ids, "1020", "3000", 2, date(2026, 1, 1))
+    before = book.entries()
+    book.sort_entries_by_date()
+    assert book.undo_label == "Buchungen sortieren"
+    book.undo()
+    assert book.entries() == before
+
+
+def test_undo_of_account_group_and_property_changes(book, ids):
+    before = snapshot(book)
+    book.update_account(ids["1020"], number="1021", opening=500, group="110")
+    book.update_group(book.group_by_code("10").id, name="Anders", parent="")
+    book.add_group("99", "Neu", "2")
+    book.set_profit_group("99")
+    book.set_properties("Anders AG", date(2027, 1, 1), date(2027, 12, 31))
+    for _ in range(5):
+        book.undo()
+    assert snapshot(book) == before
+    for _ in range(5):
+        book.redo()
+    assert book.company == "Anders AG"
+    assert book.profit_group == "99"
+    assert book.account(ids["1020"]).number == "1021"
+
+
+def test_undo_of_deleting_group_with_accounts_and_profit(book):
+    before = snapshot(book)
+    with book.step("Zeilen löschen"):
+        for number in ("2800", "2850", "2970"):
+            book.delete_account(book.account_by_number(number).id)
+        book.delete_group(book.group_by_code("28").id)
+    assert book.profit_group == ""
+    book.undo()
+    assert snapshot(book) == before
+
+
+def test_history_survives_reopening(book, ids):
+    entry_id = post(book, ids, "1020", "3000", 100)
+    book.update_entry(entry_id, amount=200)
+    path = book.path
+    book.close()
+    reopened = Book.open(path, backup=False)
+    assert reopened.undo_label == "Buchung ändern"
+    reopened.undo()
+    assert reopened.entries()[0].amount == 100
+    reopened.update_entry(entry_id, amount=300)
+    reopened.undo()
+    assert reopened.entries()[0].amount == 100
+    book.db = reopened.db
+
+
+def test_history_is_limited(book, ids, monkeypatch):
+    monkeypatch.setattr("cipolle.book.MAX_UNDO_STEPS", 3)
+    entry_id = post(book, ids, "1020", "3000", 0)
+    for amount in range(1, 6):
+        book.update_entry(entry_id, amount=amount)
+    assert book.db.execute("SELECT count(*) FROM undo_steps").fetchone()[0] == 3
+    assert book.db.execute("SELECT count(*) FROM undo_log").fetchone()[0] == 3
+    for _ in range(3):
+        assert book.undo()
+    assert book.undo() is None
+    assert book.entries()[0].amount == 2
+
+
+def test_undo_and_redo_with_empty_history(book):
+    assert book.undo() is None
+    assert book.redo() is None
+
+
+def test_result_names_the_touched_row(book, ids):
+    entry_id = post(book, ids, "1020", "3000", 100)
+    book.update_account(ids["1020"], name="Hausbank")
+    assert book.undo().row_id == ids["1020"]
+    book.update_entry(entry_id, amount=2)
+    result = book.undo()
+    assert (result.table, result.row_id) == ("entries", entry_id)
+
+
+def test_new_file_starts_without_history(book):
+    assert book.undo_label is None
+
+
+def test_next_year_starts_without_history(book, ids, tmp_path):
+    book.update_account(ids["1020"], opening=100)
+    book.update_account(ids["2800"], opening=100)
+    target = create_next_year(book, tmp_path / "2027.cipolle", "2970")
+    assert target.undo_label is None
+    assert target.account_by_number("1020").opening == 100
+    target.close()
+
+
+def test_carry_over_is_one_undoable_step(book, ids, tmp_path):
+    book.update_account(ids["1020"], opening=100)
+    book.update_account(ids["2800"], opening=100)
+    target = create_next_year(book, tmp_path / "2027.cipolle", "2970")
+    post(book, ids, "1020", "3000", 50)
+    book.add_group("15", "Neu", "1")
+    book.add_account("1599", "Neu", ASSET, "15")
+    before = snapshot(target)
+    carry_over(book, target, "2970")
+    assert target.account_by_number("1020").opening == 150
+    assert target.undo_label == "Eröffnung aus Vorjahr aktualisieren"
+    target.undo()
+    assert snapshot(target) == before
+    assert target.undo_label is None
+    target.close()
+
+
+def test_v2_file_gets_history_tables(tmp_path):
+    path = tmp_path / "v2.cipolle"
+    book = Book.create(path, "x", date(2026, 1, 1), date(2026, 12, 31))
+    book.add_group("1", "A")
+    book.close()
+    db = sqlite3.connect(path)
+    db.executescript("DROP TABLE undo_log; DROP TABLE undo_steps; PRAGMA user_version = 2;")
+    db.close()
+    book = Book.open(path)
+    book.add_group("2", "B")
+    book.undo()
+    assert [g.code for g in book.groups()] == ["1"]
+    assert book.db.execute("PRAGMA user_version").fetchone()[0] == 3
+    book.close()
+
+
+def test_changes_by_other_connections_are_not_logged(book, ids):
+    other = sqlite3.connect(book.path)
+    other.execute("UPDATE accounts SET name = 'Fremd' WHERE number = '1000'")
+    other.commit()
+    other.close()
+    assert book.undo_label is None

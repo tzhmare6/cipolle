@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QObject, Qt
+from PySide6.QtCore import QEvent, QObject, Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemDelegate,
     QAbstractItemView,
@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QCompleter,
     QHeaderView,
     QLineEdit,
+    QMenu,
     QStyledItemDelegate,
     QTableView,
 )
@@ -21,7 +22,15 @@ NEXT_KEYS = {Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Tab}
 
 
 class LedgerTable(QTableView):
-    """Tabelle, in der Enter wie Tab zum nächsten Feld springt."""
+    """Tabelle mit Zeilennummern wie in einer Tabellenkalkulation.
+
+    Enter springt wie Tab zum nächsten Feld. Ein Klick auf die Zeilennummer
+    markiert die Zeile. Die Delete-Taste leert markierte Zellen und löscht
+    ganz markierte Zeilen.
+    """
+
+    insert_requested = Signal(bool)  # True fügt unter der Auswahl ein
+    delete_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -31,13 +40,80 @@ class LedgerTable(QTableView):
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.verticalHeader().setDefaultSectionSize(26)
         self.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        self.verticalHeader().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.verticalHeader().customContextMenuRequested.connect(self._header_menu)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._cell_menu)
+
+    def _header_menu(self, position) -> None:
+        header = self.verticalHeader()
+        row = header.logicalIndexAt(position)
+        if row < 0:
+            return
+        if row not in self.selected_rows() or not self.whole_rows_selected():
+            self.selectRow(row)
+        self.row_menu().exec(header.mapToGlobal(position))
+
+    def _cell_menu(self, position) -> None:
+        index = self.indexAt(position)
+        if not index.isValid():
+            return
+        if index.row() not in self.selected_rows():
+            self.setCurrentIndex(index)
+        self.row_menu().exec(self.viewport().mapToGlobal(position))
+
+    def row_menu(self) -> QMenu:
+        menu = QMenu(self)
+        # Die leere Zeile am Ende zählt nicht, dort gibt es nichts zu löschen.
+        count = len(self.selected_data_rows())
+        actions = [
+            menu.addAction("Zeile einfügen oben", lambda: self.insert_requested.emit(False)),
+            menu.addAction("Zeile einfügen unten", lambda: self.insert_requested.emit(True)),
+            menu.addAction(
+                f"{count} Zeilen löschen" if count > 1 else "Zeile löschen", self.delete_requested.emit
+            ),
+        ]
+        for action in actions:
+            action.setEnabled(count > 0)
+        return menu
+
+    def selected_data_rows(self) -> list[int]:
+        return [row for row in self.selected_rows() if row < self.model().rowCount() - 1]
+
+    def whole_rows_selected(self) -> bool:
+        return bool(self.selectionModel().selectedRows())
+
+    def clear_selected_cells(self) -> None:
+        indexes = self.selectionModel().selectedIndexes() or [self.currentIndex()]
+        with self.model().book.step("Zellen leeren"):
+            for index in indexes:
+                if index.isValid():
+                    self.model().clear_cell(index)
 
     def keyPressEvent(self, event):
         editing = self.state() == QAbstractItemView.State.EditingState
+        if event.key() == Qt.Key.Key_Delete and not editing:
+            if self.whole_rows_selected():
+                self.delete_requested.emit()
+            else:
+                self.clear_selected_cells()
+            return
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not editing:
             self.edit(self.currentIndex())
             return
         super().keyPressEvent(event)
+
+    def apply_resort(self) -> None:
+        """Ordnet die Tabelle neu, der Cursor bleibt auf seiner Zeile."""
+        model = self.model()
+        if model is None or not model.needs_resort:
+            return
+        current = self.currentIndex()
+        row = model.row_at(current.row())
+        model.resort()
+        index = model.index(model.position_of(row), max(current.column(), 0))
+        self.setCurrentIndex(index)
+        self.scrollTo(index)
 
     def edit_neighbour(self, backwards: bool = False) -> None:
         """Öffnet das nächste bearbeitbare Feld und überspringt alle anderen."""
@@ -111,6 +187,7 @@ class FormDelegate(QStyledItemDelegate):
                 editor.selectAll()
             return
         self.closeEditor.emit(editor, QAbstractItemDelegate.EndEditHint.NoHint)
+        self.parent().apply_resort()
         self.parent().edit_neighbour(backwards=key == Qt.Key.Key_Backtab)
 
     def setModelData(self, editor, model, index):

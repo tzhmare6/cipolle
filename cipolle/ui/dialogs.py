@@ -12,11 +12,13 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QLabel,
     QLineEdit,
+    QRadioButton,
     QVBoxLayout,
 )
 
 from ..book import Book
-from ..templates import KMU_CHART, LIABILITY
+from ..chart_io import plan_import
+from ..templates import KMU_CHART, LIABILITY, Chart
 from .report_page import to_date, to_qdate
 
 
@@ -67,6 +69,54 @@ class NewBookDialog(PropertiesDialog):
         self.chart.addItem("KMU-Kontenplan (Schweiz)", KMU_CHART)
         self.chart.addItem("Leerer Kontenplan", None)
         self.form.addRow("Kontenplan", self.chart)
+
+
+class ImportDialog(QDialog):
+    """Zeigt vor dem Import, was sich ändert, und fragt nach der Art."""
+
+    def __init__(self, book: Book, chart: Chart, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Kontenplan importieren")
+        self.book = book
+        self.chart = chart
+        self.merge = QRadioButton("Zusammenführen: Vorhandenes aktualisieren, nichts entfernen")
+        self.replace = QRadioButton("Ersetzen: Konten und Gruppen entfernen, die nicht in der Datei stehen")
+        self.merge.setChecked(True)
+        self.summary = QLabel()
+        self.summary.setWordWrap(True)
+        self.buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        self.merge.toggled.connect(self._update_summary)
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.merge)
+        layout.addWidget(self.replace)
+        layout.addWidget(self.summary)
+        layout.addWidget(self.buttons)
+        self.setMinimumWidth(520)
+        self._update_summary()
+
+    def _update_summary(self) -> None:
+        plan = plan_import(self.book, self.chart, self.replace.isChecked())
+        lines = [
+            f"Konten: {len(plan.new_accounts)} neu, {len(plan.changed_accounts)} geändert, "
+            f"{len(plan.removed_accounts)} entfernt",
+            f"Gruppen: {len(plan.new_groups)} neu, {len(plan.changed_groups)} geändert, "
+            f"{len(plan.removed_groups)} entfernt",
+        ]
+        if plan.profit_group_changes:
+            lines.append(f"Jahreserfolg in Gruppe: {self.chart.profit_group or 'eigene Zeile'}")
+        if plan.kept_accounts:
+            numbers = ", ".join(a.number for a in plan.kept_accounts)
+            lines.append(f"Bleiben, weil sie Buchungen haben: {numbers}")
+        if plan.lost_openings:
+            lines.append(f"Eröffnungssaldo geht verloren: {', '.join(plan.lost_openings)}")
+        if not plan.has_changes:
+            lines.append("Der Kontenplan entspricht bereits der Datei.")
+        self.summary.setText("\n".join(lines))
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(plan.has_changes)
 
 
 class EquityDialog(QDialog):

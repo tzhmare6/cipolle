@@ -107,7 +107,12 @@ def _section(
     """
     groups = book.groups()
     accounts = [a for a in book.accounts() if a.klass == klass]
+    section_label = f"Total {title}"
+    roots = [g for g in groups if not g.parent]
     profit_group = book.profit_group if profit_row else ""
+    if profit_row and not profit_group:
+        # Ohne gewählte Gruppe gehört der Erfolg in die Gruppe, die das Schlusstotal bildet.
+        profit_group = next((g.code for g in roots if _total_label(g.name) == section_label), "")
     placed = False
 
     def lines(members: list[Account], depth: int) -> tuple[list[Row], int]:
@@ -122,30 +127,28 @@ def _section(
     def node(group: Group, depth: int, header: bool, kind: str = SUBTOTAL) -> tuple[list[Row], int]:
         nonlocal placed
         body, total = lines([a for a in accounts if a.group == group.code], depth + 1)
-        if group.code == profit_group:
-            profit_row.indent = depth + 1
-            body.append(profit_row)
-            total += profit_row.cells[2]
-            placed = True
         for child in groups:
             if child.parent == group.code:
                 rows, amount = node(child, depth + 1, True)
                 body += rows
                 total += amount
+        if group.code == profit_group:
+            profit_row.indent = depth + 1
+            body.append(profit_row)
+            total += profit_row.cells[2]
+            placed = True
         if not body:
             return [], 0
         top = [Row(["", group.name, None], GROUP, indent=depth)] if header else []
         return top + body + [Row(["", _total_label(group.name), total], kind, indent=depth)], total
 
     report.rows.append(Row(["", title, None], GROUP))
-    section_label = f"Total {title}"
-    roots = [g for g in groups if not g.parent]
     loose = [a for a in accounts if not a.group]
-    # Gibt es genau eine Wurzel namens «Total Aktiven», ist sie das Schlusstotal.
+    # Gibt es genau eine Wurzel namens «Aktiven» oder «Total Aktiven», ist sie das Schlusstotal.
     rendered = [(g, node(g, 0, _total_label(g.name) != section_label)) for g in roots]
     rendered = [(g, rows, amount) for g, (rows, amount) in rendered if rows]
     orphan = profit_row if profit_row and not placed else None
-    if len(rendered) == 1 and rendered[0][0].name == section_label and not loose and not orphan:
+    if len(rendered) == 1 and _total_label(rendered[0][0].name) == section_label and not loose and not orphan:
         _group, rows, amount = rendered[0]
         rows[-1].kind = TOTAL
         report.rows.extend(rows)
