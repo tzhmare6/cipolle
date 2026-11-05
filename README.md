@@ -29,6 +29,10 @@ es die zuletzt verwendete, ausser sie wurde vor dem Beenden mit *Datei > Schlies
 geschlossen. Dann beginnt es auf der Startseite. Nach dem Öffnen steht der Cursor
 im Kontenplan.
 
+Beim Start zeigt Cipolle kurz einen Dialog mit Animation, Version und Autoren. Er
+schliesst sich von selbst, ein Klick oder eine Taste beendet ihn sofort. Unter
+*Hilfe > Über Cipolle* lässt er sich wieder öffnen.
+
 ## Bedienung
 
 **Datei:** Pro Geschäftsjahr gibt es eine Datei mit der Endung `.cipolle`. Jede
@@ -157,6 +161,10 @@ Die Fachlogik liegt ohne Qt-Abhängigkeit in `cipolle/book.py`, `cipolle/reports
 und `cipolle/chart_io.py`, die Oberfläche in `cipolle/ui/`. Beträge sind überall ganze
 Rappen. Die `.cipolle`-Datei ist eine normale SQLite-Datenbank und lässt sich auch mit
 anderen Werkzeugen lesen.
+
+Die Bilder der App liegen in `cipolle/assets/`, die Originale in `pictures/`. Icon,
+Hintergrundbild und Startdialog stehen in `cipolle/ui/branding.py`, dort lässt sich
+mit `BACKDROP_OPACITY` auch die Stärke des Hintergrundbilds einstellen.
 
 Für Rückgängig schreiben TEMP-Trigger zu jeder Änderung den Umkehrbefehl in die
 Tabellen `undo_steps` und `undo_log`. Sie werden bei jedem Öffnen neu erzeugt und

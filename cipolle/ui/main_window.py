@@ -23,11 +23,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import __version__, reports
+from .. import reports
 from ..book import FILE_SUFFIX, Book, BookError, HistoryResult, carry_over, create_next_year, next_period
 from ..parsing import format_date
 from ..chart_io import apply_import, chart_to_json, parse_chart
 from ..templates import Chart
+from .branding import Backdrop, StartDialog
 from .dialogs import EquityDialog, ImportDialog, NewBookDialog, PropertiesDialog
 from .models import AccountsModel, EntriesModel
 from .report_page import ReportPage
@@ -51,6 +52,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self._build_welcome())
         self.stack.addWidget(self._build_tabs())
         self.setCentralWidget(self.stack)
+        self._attach_backdrop()
 
         self.summary = QLabel()
         self.statusBar().addPermanentWidget(self.summary)
@@ -60,7 +62,7 @@ class MainWindow(QMainWindow):
     # -- Aufbau --------------------------------------------------------
 
     def _build_welcome(self) -> QWidget:
-        page = QWidget()
+        page = self.welcome_page = QWidget()
         title = QLabel("<h1>Cipolle</h1><p>Lege eine neue Buchhaltung an oder öffne eine bestehende Datei.</p>")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         new_button = QPushButton("Neue Buchhaltung…")
@@ -117,6 +119,15 @@ class MainWindow(QMainWindow):
             page.link_activated.connect(self._follow_link)
         self.accounts_table.doubleClicked.connect(self._account_double_clicked)
         return self.tabs
+
+    def _attach_backdrop(self) -> None:
+        backdrop = Backdrop(self.stack)
+        backdrop.attach(self.welcome_page)
+        backdrop.attach(self.entries_table)
+        backdrop.attach(self.accounts_table)
+        for page in self.report_pages:
+            backdrop.attach(page)
+            backdrop.attach(page.view)
 
     def _build_menus(self) -> None:
         file_menu = self.menuBar().addMenu("&Datei")
@@ -635,12 +646,7 @@ class MainWindow(QMainWindow):
                 self.show_statement(account.id)
 
     def about(self) -> None:
-        QMessageBox.about(
-            self,
-            "Über Cipolle",
-            f"<b>Cipolle {__version__}</b><p>Lokale doppelte Buchhaltung. "
-            "Alle Daten bleiben auf diesem Rechner.</p>",
-        )
+        StartDialog(self, auto_close=False).exec()
 
     def closeEvent(self, event) -> None:
         self._close_book()

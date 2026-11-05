@@ -6,18 +6,20 @@ from datetime import date
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QCoreApplication, QItemSelectionModel, QLocale, QPoint, QSettings, Qt
+from PySide6.QtCore import QCoreApplication, QEvent, QItemSelectionModel, QLocale, QObject, QPoint, QSettings, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialogButtonBox, QLineEdit, QMessageBox
 
-from cipolle import reports
+from cipolle import __version__, reports
 from cipolle.__main__ import configure
 from cipolle.book import Book
 from cipolle.templates import KMU_CHART
+from cipolle.ui import branding
+from cipolle.ui.branding import ICON_SIZES, StartDialog, app_icon
 from cipolle.ui.dialogs import ImportDialog
 from cipolle.ui.main_window import MainWindow
 from cipolle.ui.models import AccountsModel, EntriesModel
-from cipolle.ui.report_page import write_pdf
+from cipolle.ui.report_page import ReportPage, write_pdf
 
 
 @pytest.fixture(scope="session")
@@ -1107,3 +1109,80 @@ def test_values_survive_reopen(app, window, tmp_path):
     copy = Book.open(path, backup=False)
     assert copy.company == "Muster"
     copy.close()
+
+
+def test_app_icon_offers_every_size(app):
+    assert {size.width() for size in app_icon().availableSizes()} == set(ICON_SIZES)
+
+
+def backdrop_visible(widget):
+    """Vergleicht die Fläche mit einem Bild ohne Filter: Das Logo färbt die Mitte."""
+    image = widget.grab().toImage()
+    center = image.pixelColor(image.width() // 2, image.height() // 2)
+    return center != widget.palette().color(widget.backgroundRole())
+
+
+def test_backdrop_shows_on_every_tab(app, window):
+    for index in range(window.tabs.count()):
+        window.tabs.setCurrentIndex(index)
+        app.processEvents()
+        page = window.tabs.currentWidget()
+        view = page.view if isinstance(page, ReportPage) else page
+        assert backdrop_visible(view.viewport()), window.tabs.tabText(index)
+
+
+def test_backdrop_stays_in_place_while_scrolling(app, window):
+    table = window.accounts_table
+    window.tabs.setCurrentWidget(table)
+    app.processEvents()
+    bar = table.verticalScrollBar()
+    assert bar.maximum() > 0
+    repaints = []
+    viewport = table.viewport()
+
+    class Counter(QObject):
+        def eventFilter(self, _widget, event):
+            if event.type() == QEvent.Type.Paint:
+                repaints.append(event.region().boundingRect().height())
+            return False
+
+    counter = Counter()
+    viewport.installEventFilter(counter)
+    bar.setValue(bar.value() + 1)
+    app.processEvents()
+    viewport.removeEventFilter(counter)
+    assert viewport.height() in repaints
+
+
+def test_start_dialog_names_version_and_authors(app):
+    dialog = StartDialog()
+    text = dialog.info.text()
+    assert __version__ in text
+    assert "Claude Opus" in text and "Remo Maurer" in text
+    assert dialog.movie.isValid() and dialog.movie.frameCount() == 30
+
+
+def test_start_dialog_closes_itself_after_the_animation(app, monkeypatch):
+    monkeypatch.setattr(branding, "START_HOLD_MS", 0)
+    dialog = StartDialog()
+    dialog.show()
+    QTest.qWait(3600)
+    assert not dialog.isVisible()
+    assert dialog.movie.currentFrameNumber() == dialog.movie.frameCount() - 1
+
+
+def test_start_dialog_closes_on_key(app):
+    dialog = StartDialog()
+    dialog.show()
+    QTest.keyClick(dialog, Qt.Key.Key_Space)
+    assert not dialog.isVisible()
+
+
+def test_about_dialog_stays_open(app):
+    dialog = StartDialog(auto_close=False)
+    dialog.show()
+    dialog._frame_changed(dialog.movie.frameCount() - 1)
+    QTest.mouseClick(dialog, Qt.MouseButton.LeftButton)
+    app.processEvents()
+    assert dialog.isVisible()
+    dialog.close()

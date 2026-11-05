@@ -18,5 +18,8 @@ cipolle = "cipolle.__main__:main"
 [tool.setuptools.packages.find]
 include = ["cipolle*"]
 
+[tool.setuptools.package-data]
+cipolle = ["assets/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
