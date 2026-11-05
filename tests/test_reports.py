@@ -42,6 +42,17 @@ def test_zero_accounts_are_hidden_unless_requested(book, ids):
     assert any("1000" in row.cells for row in reports.balance_sheet(book, show_zero=True).rows)
 
 
+def test_account_with_movements_but_no_balance_follows_zero_option(book, ids):
+    post(book, ids, "1140", "1020", 5000, date(2026, 2, 1), "Vorschuss")
+    post(book, ids, "1020", "1140", 5000, date(2026, 3, 1), "Rückzahlung")
+    post(book, ids, "6000", "3000", 100, date(2026, 3, 1), "Storno")
+    post(book, ids, "3000", "6000", 100, date(2026, 3, 2), "Storno zurück")
+    for build in (reports.balance_sheet, reports.income_statement):
+        number = "1140" if build is reports.balance_sheet else "6000"
+        assert not any(number in row.cells for row in build(book).rows)
+        assert any(number in row.cells for row in build(book, show_zero=True).rows)
+
+
 def test_income_statement(book, ids):
     setup_year(book, ids)
     report = reports.income_statement(book)

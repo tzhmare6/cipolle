@@ -8,3 +8,4 @@ dist/
 # Buchhaltungsdaten gehören nicht ins Repository
 *.cipolle
 *.cipolle.bak
+*.cipolle.gz

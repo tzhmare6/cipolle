@@ -120,7 +120,7 @@ def _section(
         for account in members:
             amount = book.balance(account, movements)
             total += amount
-            if amount or show_zero or account.id in movements:
+            if amount or show_zero:
                 rows.append(Row([account.number, account.name, amount], link=f"account:{account.id}", indent=depth))
         return rows, total
 
