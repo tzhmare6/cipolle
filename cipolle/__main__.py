@@ -14,6 +14,7 @@ from .ui.main_window import MainWindow
 def configure(app: QApplication) -> None:
     app.setApplicationName("Cipolle")
     app.setOrganizationName("Cipolle")
+    app.setDesktopFileName("cipolle")
     app.setStyle("Fusion")
     app.setWindowIcon(app_icon())
     QLocale.setDefault(QLocale(QLocale.Language.German, QLocale.Country.Switzerland))

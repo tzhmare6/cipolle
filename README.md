@@ -33,6 +33,32 @@ Beim Start zeigt Cipolle kurz einen Dialog mit Animation, Version und Autoren. E
 schliesst sich von selbst, ein Klick oder eine Taste beendet ihn sofort. Unter
 *Hilfe > Über Cipolle* lässt er sich wieder öffnen.
 
+## Als Datei oder Paket bauen
+
+`build.sh` packt Cipolle mit PyInstaller in eine einzige ausführbare Datei:
+
+```bash
+./build.sh
+```
+
+Das Ergebnis ist `dist/cipolle`. Sie läuft auf x86-64-Linux mit gleich alter oder
+neuerer glibc als auf dem Build-Rechner.
+
+`build-deb.sh` macht daraus ein Debian-Paket und baut die Datei bei Bedarf neu:
+
+```bash
+./build-deb.sh
+```
+
+```bash
+sudo apt install ./dist/cipolle_0.1.0_amd64.deb
+```
+
+Das Paket installiert das Programm nach `/usr/bin/cipolle`, dazu den Eintrag im
+Startmenü, die Icons und den Dateityp `.cipolle`. Qt und Python stecken im Programm.
+Nur glibc und die Grafik-Bibliotheken stammen vom System und stehen als
+Abhängigkeiten im Paket, deshalb `apt` und nicht `dpkg -i` verwenden.
+
 ## Bedienung
 
 **Datei:** Pro Geschäftsjahr gibt es eine Datei mit der Endung `.cipolle`. Jede
