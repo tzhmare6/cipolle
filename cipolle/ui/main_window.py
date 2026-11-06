@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 
 from PySide6.QtCore import QItemSelectionModel, QSettings, Qt, QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QFileDialog,
     QHBoxLayout,
@@ -45,6 +47,7 @@ class MainWindow(QMainWindow):
         self.book: Book | None = None
         self.entries_model: EntriesModel | None = None
         self.accounts_model: AccountsModel | None = None
+        self._save_error_open = False
         self.settings = QSettings()
         self.resize(1180, 760)
 
@@ -234,6 +237,8 @@ class MainWindow(QMainWindow):
         for model in (self.entries_model, self.accounts_model):
             model.message.connect(self._show_error)
             model.changed.connect(self._update_summary)
+            # Verzögert, weil der Dialog sonst einem offenen Eingabefeld den Fokus nimmt.
+            model.save_failed.connect(self._show_save_error, Qt.ConnectionType.QueuedConnection)
         # Verzögert, weil das Neuordnen ein noch offenes Eingabefeld schliessen würde.
         self.accounts_model.order_changed.connect(
             self.accounts_table.apply_resort, Qt.ConnectionType.QueuedConnection
@@ -305,6 +310,28 @@ class MainWindow(QMainWindow):
     def _show_error(self, message: str) -> None:
         self.statusBar().showMessage(message, 8000)
 
+    def _show_save_error(self, detail: str) -> None:
+        """Zeigt einen Schreibfehler. Folgefehler derselben Aktion öffnen keinen zweiten Dialog."""
+        if self._save_error_open:
+            return
+        self._save_error_open = True
+        try:
+            text = f"Die Änderung konnte nicht in die Datei geschrieben werden.\n\n{detail}"
+            QMessageBox.warning(self, "Nicht gespeichert", text)
+        finally:
+            self._save_error_open = False
+
+    @contextmanager
+    def _saving(self):
+        """Meldet Schreibfehler im Block und zeigt danach den Stand der Datei."""
+        try:
+            yield
+        except sqlite3.Error as exc:
+            self._show_save_error(str(exc))
+            self.entries_model.reload()
+            self.accounts_model.reload()
+            self._update_summary()
+
     def _start_dir(self) -> str:
         return self.settings.value("lastDir", str(Path.home()))
 
@@ -360,6 +387,16 @@ class MainWindow(QMainWindow):
             return
         self._set_book(book)
 
+    def open_from_system(self, path: str) -> None:
+        """Öffnet eine Datei aus dem Finder. Offene Dialoge hängen an der aktuellen Datei."""
+        dialog = QApplication.activeModalWidget()
+        if dialog is not None and not isinstance(dialog, StartDialog):
+            self._show_error("Zuerst den offenen Dialog schliessen, dann die Datei erneut öffnen.")
+            return
+        self.open_path(path)
+        self.raise_()
+        self.activateWindow()
+
     def edit_properties(self) -> None:
         self._commit_edits()
         book = self.book
@@ -369,7 +406,7 @@ class MainWindow(QMainWindow):
         try:
             book.set_properties(*dialog.values())
             book.set_profit_group(dialog.profit_group.currentData())
-        except BookError as exc:
+        except (BookError, sqlite3.Error) as exc:
             QMessageBox.warning(self, "Nicht gespeichert", str(exc))
             return
         self.entries_model.reload()
@@ -427,7 +464,7 @@ class MainWindow(QMainWindow):
             dialog = EquityDialog(source, title, note, self)
             if dialog.exec() == QDialog.DialogCode.Accepted and dialog.equity_number():
                 carry_over(source, self.book, dialog.equity_number())
-        except BookError as exc:
+        except (BookError, sqlite3.Error) as exc:
             QMessageBox.warning(self, title, str(exc))
         finally:
             source.close()
@@ -478,7 +515,7 @@ class MainWindow(QMainWindow):
     def import_chart_data(self, chart: Chart, replace: bool) -> None:
         try:
             apply_import(self.book, chart, replace)
-        except BookError as exc:
+        except (BookError, sqlite3.Error) as exc:
             QMessageBox.warning(self, "Kontenplan nicht importiert", str(exc))
         self.accounts_model.reload()
         self.entries_model.reload()
@@ -522,12 +559,13 @@ class MainWindow(QMainWindow):
         rows = table.selected_data_rows() if table else []
         if not rows:
             return
-        if below:
-            table.model().insert_after(rows[-1])
-            self._select_cell(table, rows[-1] + 1)
-        else:
-            table.model().insert_before(rows[0])
-            self._select_cell(table, rows[0])
+        with self._saving():
+            if below:
+                table.model().insert_after(rows[-1])
+                self._select_cell(table, rows[-1] + 1)
+            else:
+                table.model().insert_before(rows[0])
+                self._select_cell(table, rows[0])
 
     def delete_rows(self) -> None:
         self._commit_edits()
@@ -543,10 +581,11 @@ class MainWindow(QMainWindow):
         text = f"{len(rows)} Zeilen löschen?" if len(rows) > 1 else self._delete_question(table, rows[0])
         if text and QMessageBox.question(self, "Löschen", text) != QMessageBox.StandardButton.Yes:
             return
-        model.delete_rows(rows)
-        if table is self.accounts_table:
-            self.entries_model.reload()
-        self._select_cell(table, rows[0])
+        with self._saving():
+            model.delete_rows(rows)
+            if table is self.accounts_table:
+                self.entries_model.reload()
+            self._select_cell(table, rows[0])
 
     def _delete_question(self, table: LedgerTable, row: int) -> str | None:
         """Frage vor dem Löschen. Eine leere eingefügte Zeile braucht keine."""
@@ -561,12 +600,14 @@ class MainWindow(QMainWindow):
     def undo(self) -> None:
         self._commit_edits()
         if self.book is not None:
-            self._show_history(self.book.undo(), "Rückgängig")
+            with self._saving():
+                self._show_history(self.book.undo(), "Rückgängig")
 
     def redo(self) -> None:
         self._commit_edits()
         if self.book is not None:
-            self._show_history(self.book.redo(), "Wiederholt")
+            with self._saving():
+                self._show_history(self.book.redo(), "Wiederholt")
 
     def _show_history(self, result: HistoryResult | None, verb: str) -> None:
         """Zeigt das Ergebnis und springt in Tabellen zur betroffenen Zeile."""
@@ -596,9 +637,10 @@ class MainWindow(QMainWindow):
 
     def sort_entries(self) -> None:
         self._commit_edits()
-        self.book.sort_entries_by_date()
-        self.entries_model.reload()
-        self._update_summary()
+        with self._saving():
+            self.book.sort_entries_by_date()
+            self.entries_model.reload()
+            self._update_summary()
 
     # -- Navigation ----------------------------------------------------
 

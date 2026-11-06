@@ -7,11 +7,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import QCoreApplication, QEvent, QItemSelectionModel, QLocale, QObject, QPoint, QSettings, Qt
+from PySide6.QtGui import QFileOpenEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDialogButtonBox, QLineEdit, QMessageBox
 
 from cipolle import __version__, reports
-from cipolle.__main__ import configure
+from cipolle.__main__ import CipolleApplication, configure, report_unexpected_error
 from cipolle.book import Book
 from cipolle.templates import KMU_CHART
 from cipolle.ui import branding
@@ -24,7 +25,7 @@ from cipolle.ui.report_page import ReportPage, write_pdf
 
 @pytest.fixture(scope="session")
 def app():
-    instance = QApplication.instance() or QApplication([])
+    instance = QApplication.instance() or CipolleApplication([])
     QCoreApplication.setOrganizationName("CipolleTest")
     QCoreApplication.setApplicationName("CipolleTest")
     return instance
@@ -1186,3 +1187,102 @@ def test_about_dialog_stays_open(app):
     app.processEvents()
     assert dialog.isVisible()
     dialog.close()
+
+
+def block_writes(window, monkeypatch):
+    """Lässt jedes Schreiben fehlschlagen, wie bei einer schreibgeschützten Datei."""
+    shown = []
+    monkeypatch.setattr("cipolle.ui.main_window.QMessageBox.warning", lambda *a: shown.append(a[2]))
+    window.book.db.execute("PRAGMA query_only = ON")
+    return shown
+
+
+def add_entry(window):
+    window.book.add_entry(text="Miete")
+    window.entries_model.reload()
+    window.entries_table.setCurrentIndex(window.entries_model.index(0, EntriesModel.TEXT))
+
+
+def test_failed_save_warns_and_keeps_the_input_open(app, window, monkeypatch):
+    shown = block_writes(window, monkeypatch)
+    table = window.entries_table
+    table.setCurrentIndex(window.entries_model.index(0, EntriesModel.TEXT))
+    type_field(app, table, "Miete")
+    app.processEvents()
+    assert len(shown) == 1
+    assert "nicht in die Datei geschrieben" in shown[0]
+    assert table.state() == table.State.EditingState
+    assert window.book.entries() == []
+    # Das offene Feld wird beim Schliessen gespeichert und darf dann keinen Dialog mehr auslösen.
+    window.book.db.execute("PRAGMA query_only = OFF")
+
+
+def test_failed_account_save_warns(app, window, monkeypatch):
+    shown = block_writes(window, monkeypatch)
+    model = window.accounts_model
+    row = account_row(window, "1020")
+    assert not model.setData(model.index(row, AccountsModel.NAME), "Hausbank")
+    app.processEvents()
+    assert len(shown) == 1
+    assert window.book.account_by_number("1020").name == "Bank"
+
+
+def test_failed_row_actions_warn_and_keep_the_table(app, window, monkeypatch):
+    add_entry(window)
+    shown = block_writes(window, monkeypatch)
+    window.insert_row()
+    window.undo()
+    window.sort_entries()
+    assert len(shown) == 3
+    assert window.entries_model.rowCount() == 2
+
+
+def test_failed_delete_warns_and_keeps_the_row(app, window, monkeypatch, answer_yes):
+    add_entry(window)
+    shown = block_writes(window, monkeypatch)
+    window.delete_rows()
+    assert len(shown) == 1
+    assert len(window.book.entries()) == 1
+
+
+def test_failed_clearing_of_cells_warns(app, window, monkeypatch):
+    add_entry(window)
+    shown = block_writes(window, monkeypatch)
+    QTest.keyClick(window.entries_table, Qt.Key.Key_Delete)
+    app.processEvents()
+    assert len(shown) == 1
+    assert window.book.entries()[0].text == "Miete"
+
+
+def test_unexpected_error_is_shown(app, monkeypatch):
+    shown = []
+    monkeypatch.setattr("cipolle.__main__.QMessageBox.critical", lambda *a: shown.append(a[2]))
+    report_unexpected_error(ValueError, ValueError("kaputt"), None)
+    assert "kaputt" in shown[0]
+
+
+def test_file_from_the_finder_is_opened(app, window, tmp_path):
+    path = tmp_path / "finder.cipolle"
+    Book.create(path, "Finder", date(2026, 1, 1), date(2026, 12, 31)).close()
+    app.file_opened.connect(window.open_from_system)
+    try:
+        QCoreApplication.sendEvent(app, QFileOpenEvent(str(path)))
+    finally:
+        app.file_opened.disconnect(window.open_from_system)
+    assert window.book.company == "Finder"
+
+
+def test_file_from_the_finder_waits_for_an_open_dialog(app, window, tmp_path, monkeypatch):
+    monkeypatch.setattr("cipolle.ui.main_window.QApplication.activeModalWidget", lambda: QMessageBox())
+    window.open_from_system(str(tmp_path / "finder.cipolle"))
+    assert window.book.company == "Muster"
+    assert "Dialog" in window.statusBar().currentMessage()
+
+
+def test_file_from_the_finder_passes_the_start_dialog(app, window, tmp_path, monkeypatch):
+    path = tmp_path / "finder.cipolle"
+    Book.create(path, "Finder", date(2026, 1, 1), date(2026, 12, 31)).close()
+    dialog = StartDialog()
+    monkeypatch.setattr("cipolle.ui.main_window.QApplication.activeModalWidget", lambda: dialog)
+    window.open_from_system(str(path))
+    assert window.book.company == "Finder"
