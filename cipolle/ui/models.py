@@ -6,6 +6,8 @@ einen neuen Datensatz an. Jede Eingabe wird sofort in die Datei geschrieben.
 
 from __future__ import annotations
 
+import sqlite3
+
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt, Signal
 from PySide6.QtGui import QColor, QFont
 
@@ -22,19 +24,30 @@ EDIT = Qt.ItemDataRole.EditRole
 RIGHT = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
 
 
-class EntriesModel(QAbstractTableModel):
+class LedgerModel(QAbstractTableModel):
+    """Gemeinsame Signale der beiden Tabellen."""
+
+    message = Signal(str)
+    changed = Signal()
+    save_failed = Signal(str)
+
+    last_error: str | None = None
+
+    def report_save_error(self, error: sqlite3.Error) -> None:
+        """Meldet einen Schreibfehler. Ein offenes Eingabefeld bleibt dadurch offen."""
+        self.last_error = str(error)
+        self.save_failed.emit(str(error))
+
+
+class EntriesModel(LedgerModel):
     DATE, DOC, TEXT, DEBIT, CREDIT, AMOUNT = range(6)
     HEADERS = ["Datum", "Beleg", "Beschreibung", "Soll", "Haben", "Betrag"]
     FIRST_COLUMN = DATE
     needs_resort = False  # Buchungen behalten ihre Reihenfolge
 
-    message = Signal(str)
-    changed = Signal()
-
     def __init__(self, book: Book, parent=None):
         super().__init__(parent)
         self.book = book
-        self.last_error: str | None = None
         self.rows: list[Entry] = []
         self.problems: dict[int, list[str]] = {}
         self.accounts: dict[int, Account] = {}
@@ -122,19 +135,22 @@ class EntriesModel(QAbstractTableModel):
             return False
         try:
             fields = self._parse(index.column(), str(value))
+            entry = self.entry_at(index.row())
+            if entry is None:
+                if not any(v not in (None, "") for v in fields.values()):
+                    return False
+                if "date" not in fields and self.rows:
+                    fields["date"] = self.rows[-1].date
+                self.book.add_entry(**fields)
+            else:
+                self.book.update_entry(entry.id, **fields)
         except (ValueError, BookError) as exc:
             self.last_error = str(exc)
             self.message.emit(str(exc))
             return False
-        entry = self.entry_at(index.row())
-        if entry is None:
-            if not any(v not in (None, "") for v in fields.values()):
-                return False
-            if "date" not in fields and self.rows:
-                fields["date"] = self.rows[-1].date
-            self.book.add_entry(**fields)
-        else:
-            self.book.update_entry(entry.id, **fields)
+        except sqlite3.Error as exc:
+            self.report_save_error(exc)
+            return False
         self._refresh()
         return True
 
@@ -158,9 +174,9 @@ class EntriesModel(QAbstractTableModel):
         entry = self.entry_at(row)
         if entry is None:
             return
-        self.beginInsertRows(QModelIndex(), row, row)
         with self.book.step("Zeile einfügen"):
             self.book.add_entry(date=entry.date, before_position=entry.position)
+        self.beginInsertRows(QModelIndex(), row, row)
         self._load()
         self.endInsertRows()
         self.changed.emit()
@@ -170,9 +186,9 @@ class EntriesModel(QAbstractTableModel):
         if entry is None:
             return
         following = self.entry_at(row + 1)
-        self.beginInsertRows(QModelIndex(), row + 1, row + 1)
         with self.book.step("Zeile einfügen"):
             self.book.add_entry(date=entry.date, before_position=following.position if following else None)
+        self.beginInsertRows(QModelIndex(), row + 1, row + 1)
         self._load()
         self.endInsertRows()
         self.changed.emit()
@@ -184,21 +200,18 @@ class EntriesModel(QAbstractTableModel):
         self.changed.emit()
 
 
-class AccountsModel(QAbstractTableModel):
+class AccountsModel(LedgerModel):
     """Kontenplan wie bei Banana: Konten mit «Summe in» und Gruppenzeilen als Totale."""
 
     GROUP, NUMBER, NAME, KLASS, SUM_IN, OPENING, BALANCE = range(7)
     HEADERS = ["Gruppe", "Konto", "Bezeichnung", "Klasse", "Summe in", "Eröffnung", "Saldo"]
     FIRST_COLUMN = NUMBER
 
-    message = Signal(str)
-    changed = Signal()
     order_changed = Signal()
 
     def __init__(self, book: Book, parent=None):
         super().__init__(parent)
         self.book = book
-        self.last_error: str | None = None
         self.rows: list[ChartRow] = []
         self.balances: dict[int, int] = {}
         self.group_balances: dict[str, int] = {}
@@ -383,6 +396,9 @@ class AccountsModel(QAbstractTableModel):
         except (ValueError, BookError) as exc:
             self.last_error = str(exc)
             self.message.emit(str(exc))
+            return False
+        except sqlite3.Error as exc:
+            self.report_save_error(exc)
             return False
         self._refresh()
         if column in (self.GROUP, self.NUMBER, self.SUM_IN) and text.strip() != (before or ""):

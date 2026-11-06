@@ -59,10 +59,23 @@ Startmenü, die Icons und den Dateityp `.cipolle`. Qt und Python stecken im Prog
 Nur glibc und die Grafik-Bibliotheken stammen vom System und stehen als
 Abhängigkeiten im Paket, deshalb `apt` und nicht `dpkg -i` verwenden.
 
+Auf dem Mac baut `build-mac.sh` eine App mit Icon und Dateityp `.cipolle`:
+
+```bash
+./build-mac.sh
+```
+
+Das Ergebnis ist `dist/Cipolle.app`, sie gehört nach `/Applications`. Sie läuft auf
+Macs mit demselben Prozessortyp wie der Build-Rechner. Die App ist nicht notarisiert,
+auf einem anderen Mac blockiert Gatekeeper deshalb den ersten Start. `build.sh`
+funktioniert auf dem Mac ebenfalls, liefert aber nur ein Programm für das Terminal.
+
 ## Bedienung
 
 **Datei:** Pro Geschäftsjahr gibt es eine Datei mit der Endung `.cipolle`. Jede
-Eingabe wird sofort gespeichert, es gibt keinen Speichern-Befehl. Beim Öffnen
+Eingabe wird sofort gespeichert, es gibt keinen Speichern-Befehl. Schlägt das fehl,
+etwa bei einer schreibgeschützten Datei, erscheint eine Meldung und das Feld bleibt
+offen. Beim Öffnen
 legt Cipolle eine Kopie der Datei als `.cipolle.bak` an und überschreibt dabei
 die vorherige Kopie. Eine echte Datensicherung ersetzt das nicht. Dateien älterer
 Cipolle-Versionen werden beim Öffnen automatisch umgestellt und lassen sich danach

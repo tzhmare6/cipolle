@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 from PySide6.QtCore import QEvent, QObject, Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemDelegate,
@@ -85,10 +87,14 @@ class LedgerTable(QTableView):
 
     def clear_selected_cells(self) -> None:
         indexes = self.selectionModel().selectedIndexes() or [self.currentIndex()]
-        with self.model().book.step("Zellen leeren"):
-            for index in indexes:
-                if index.isValid():
-                    self.model().clear_cell(index)
+        model = self.model()
+        try:
+            with model.book.step("Zellen leeren"):
+                for index in indexes:
+                    if index.isValid():
+                        model.clear_cell(index)
+        except sqlite3.Error as exc:
+            model.report_save_error(exc)
 
     def keyPressEvent(self, event):
         editing = self.state() == QAbstractItemView.State.EditingState
