@@ -181,6 +181,9 @@ noch geändert, holt *Datei > Eröffnung aus Vorjahr aktualisieren* die Saldi ne
 | Entf | Zellen leeren oder markierte Zeilen löschen |
 | Ctrl+Entf | Aktuelle oder markierte Zeilen löschen |
 
+Auf macOS gilt in allen Tastenkürzeln Command (⌘) anstelle von Ctrl, zum Beispiel
+⌘Z für Rückgängig.
+
 ## Nicht enthalten
 
 MWST, Fremdwährungen, Bankimport, Rechnungen, Kostenstellen, Budget, Vorjahresvergleich,
