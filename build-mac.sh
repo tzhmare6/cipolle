@@ -20,13 +20,7 @@ fi
 .venv/bin/python -m pip install --quiet -e '.[build]'
 
 rm -rf "$work"
-mkdir -p "$work/cipolle.iconset"
-
-# iconutil verlangt diese Namen. Die Variante 512x512@2x gibt es nicht, sie ist optional.
-for entry in 16:16x16 32:16x16@2x 32:32x32 64:32x32@2x 128:128x128 256:128x128@2x 256:256x256 512:256x256@2x 512:512x512; do
-    cp "cipolle/assets/icon_${entry%%:*}.png" "$work/cipolle.iconset/icon_${entry#*:}.png"
-done
-iconutil --convert icns --output "$work/cipolle.icns" "$work/cipolle.iconset"
+mkdir -p "$work"
 
 # PyInstaller braucht ein Skript als Einstieg, __main__.py nutzt relative Importe.
 cat > "$work/start.py" <<'PY'
@@ -50,7 +44,7 @@ collected = COLLECT(exe, a.binaries, a.datas, name="Cipolle")
 app = BUNDLE(
     collected,
     name="Cipolle.app",
-    icon="cipolle.icns",
+    icon="$PWD/cipolle/assets/cipolle.icns",
     bundle_identifier="$bundle_id",
     version="$version",
     info_plist={
