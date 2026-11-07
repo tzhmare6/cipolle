@@ -65,8 +65,8 @@ Auf dem Mac baut `build-mac.sh` eine App mit Icon und Dateityp `.cipolle`:
 ./build-mac.sh
 ```
 
-Das Ergebnis ist `dist/Cipolle.app`, sie gehört nach `/Applications`. Sie läuft auf
-Macs mit demselben Prozessortyp wie der Build-Rechner. Die App ist nicht notarisiert,
+Das Ergebnis ist `dist/Cipolle.app`. Installiert wird sie über das Disk-Image aus
+`build-dmg.sh`. Sie läuft auf Macs mit demselben Prozessortyp wie der Build-Rechner. Die App ist nicht notarisiert,
 auf einem anderen Mac blockiert Gatekeeper deshalb den ersten Start. `build.sh`
 funktioniert auf dem Mac ebenfalls, liefert aber nur ein Programm für das Terminal.
 
@@ -78,6 +78,13 @@ funktioniert auf dem Mac ebenfalls, liefert aber nur ein Programm für das Termi
 
 Das Ergebnis ist `dist/Cipolle-0.1.0.dmg` mit dem Cipolle-Icon. Beim Öffnen zeigt das
 Fenster links die App, rechts den Ordner `Applications` und dazwischen einen Pfeil.
+
+Installieren auf dem Mac:
+
+1. `Cipolle-0.1.0.dmg` mit einem Doppelklick öffnen.
+2. Cipolle im Fenster auf den Ordner `Applications` ziehen.
+3. Das Laufwerk «Cipolle 0.1.0» im Finder auswerfen. Die DMG-Datei wird danach nicht mehr gebraucht.
+
 Das Hintergrundbild `packaging/dmg-background.tiff` entsteht mit
 `packaging/make_dmg_background.py`, das dafür Pillow braucht.
 
@@ -223,3 +230,8 @@ Für Rückgängig schreiben TEMP-Trigger zu jeder Änderung den Umkehrbefehl in 
 Tabellen `undo_steps` und `undo_log`. Sie werden bei jedem Öffnen neu erzeugt und
 passen so immer zum Schema. Änderungsfunktionen in `Book` tragen den Dekorator
 `@undoable`, mehrteilige Aktionen laufen in `with book.step(...)`.
+
+Die Anleitung `docs/Cipolle-Anleitung.pdf` entsteht auf dem Mac in zwei Schritten.
+`docs/anleitung/make_screenshots.py` fotografiert die App mit Beispieldaten, dafür
+mit `QT_QPA_PLATFORM=cocoa` starten. `docs/anleitung/make_pdf.py` setzt daraus die
+PDF und braucht reportlab und Pillow.
