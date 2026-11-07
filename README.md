@@ -70,6 +70,15 @@ Macs mit demselben Prozessortyp wie der Build-Rechner. Die App ist nicht notaris
 auf einem anderen Mac blockiert Gatekeeper deshalb den ersten Start. `build.sh`
 funktioniert auf dem Mac ebenfalls, liefert aber nur ein Programm für das Terminal.
 
+`build-dmg.sh` packt die App in ein Disk-Image und baut sie bei Bedarf neu:
+
+```bash
+./build-dmg.sh
+```
+
+Das Ergebnis ist `dist/Cipolle-0.1.0.dmg`. Im Image liegt neben der App ein Verweis
+auf `Applications`, dorthin wird Cipolle zum Installieren gezogen.
+
 ## Bedienung
 
 **Datei:** Pro Geschäftsjahr gibt es eine Datei mit der Endung `.cipolle`. Jede
