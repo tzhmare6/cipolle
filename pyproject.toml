@@ -11,7 +11,7 @@ dependencies = ["PySide6>=6.6"]
 
 [project.optional-dependencies]
 dev = ["pytest"]
-build = ["pyinstaller"]
+build = ["pyinstaller", "dmgbuild; sys_platform == 'darwin'"]
 
 [project.scripts]
 cipolle = "cipolle.__main__:main"

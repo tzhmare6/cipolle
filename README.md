@@ -76,8 +76,10 @@ funktioniert auf dem Mac ebenfalls, liefert aber nur ein Programm für das Termi
 ./build-dmg.sh
 ```
 
-Das Ergebnis ist `dist/Cipolle-0.1.0.dmg`. Im Image liegt neben der App ein Verweis
-auf `Applications`, dorthin wird Cipolle zum Installieren gezogen.
+Das Ergebnis ist `dist/Cipolle-0.1.0.dmg` mit dem Cipolle-Icon. Beim Öffnen zeigt das
+Fenster links die App, rechts den Ordner `Applications` und dazwischen einen Pfeil.
+Das Hintergrundbild `packaging/dmg-background.tiff` entsteht mit
+`packaging/make_dmg_background.py`, das dafür Pillow braucht.
 
 ## Bedienung
 
